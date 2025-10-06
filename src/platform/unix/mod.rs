@@ -11,8 +11,8 @@ use crate::ipc::{self, IpcMessage};
 use bincode;
 use fnv::FnvHasher;
 use libc::{
-    self, cmsghdr, linger, CMSG_DATA, CMSG_LEN, CMSG_SPACE, MAP_FAILED, MAP_SHARED, PROT_READ,
-    PROT_WRITE, SOCK_SEQPACKET, SOL_SOCKET,
+    self, cmsghdr, linger, CMSG_DATA, CMSG_LEN, CMSG_SPACE, FD_CLOEXEC, F_SETFD, MAP_FAILED,
+    MAP_SHARED, PROT_READ, PROT_WRITE, SOCK_SEQPACKET, SOL_SOCKET,
 };
 use libc::{c_char, c_int, c_void, getsockopt, SO_LINGER, S_IFMT, S_IFSOCK};
 use libc::{iovec, msghdr, off_t, recvmsg, sendmsg};
@@ -20,6 +20,8 @@ use libc::{sa_family_t, setsockopt, size_t, sockaddr, sockaddr_un, socketpair, s
 use libc::{EAGAIN, EWOULDBLOCK};
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
+use nix::sys::memfd::MFdFlags;
+use nix::unistd::ftruncate;
 use std::cell::Cell;
 use std::cmp;
 use std::collections::HashMap;
@@ -30,9 +32,10 @@ use std::fmt::{self, Debug, Formatter};
 use std::hash::BuildHasherDefault;
 use std::io;
 use std::mem;
+use std::num::NonZero;
 use std::ops::{Deref, RangeFrom};
-use std::os::fd::RawFd;
-use std::ptr;
+use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::ptr::{self, NonNull};
 use std::slice;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -738,7 +741,7 @@ fn make_socket_lingering(sockfd: c_int) -> Result<(), UnixError> {
 }
 
 struct BackingStore {
-    fd: c_int,
+    fd: OwnedFd,
 }
 
 impl BackingStore {
@@ -753,50 +756,43 @@ impl BackingStore {
             timestamp.subsec_nanos()
         ))
         .unwrap();
+        println!("name {:?}", name);
         let fd = create_shmem(name, length);
-        Self::from_fd(fd)
+        BackingStore::from_fd(fd)
     }
 
-    pub fn from_fd(fd: c_int) -> BackingStore {
+    pub fn from_fd(fd: OwnedFd) -> BackingStore {
         BackingStore { fd }
     }
 
-    pub fn fd(&self) -> c_int {
-        self.fd
+    pub fn fd(&self) -> BorrowedFd {
+        self.fd.as_fd()
     }
 
-    pub unsafe fn map_file(&self, length: Option<size_t>) -> (*mut u8, size_t) {
-        let length = length.unwrap_or_else(|| {
-            let mut st = mem::MaybeUninit::uninit();
-            if libc::fstat(self.fd, st.as_mut_ptr()) != 0 {
-                panic!("error stating fd {}: {}", self.fd, UnixError::last());
-            }
-            st.assume_init().st_size as size_t
-        });
-        if length == 0 {
+    pub unsafe fn map_file(&self, length: Option<usize>) -> (*mut u8, usize) {
+        let length = NonZero::new(length.unwrap_or_else(|| {
+            nix::sys::stat::fstat(self.fd.as_fd())
+                .map(|stat| stat.st_size as usize)
+                .unwrap()
+        }));
+        if length.is_none() {
             // This will cause `mmap` to fail, so handle it explicitly.
-            return (ptr::null_mut(), length);
+            return (ptr::null_mut(), 0);
         }
-        let address = libc::mmap(
-            ptr::null_mut(),
-            length,
-            PROT_READ | PROT_WRITE,
-            MAP_SHARED,
-            self.fd,
-            0,
-        );
-        assert!(!address.is_null());
-        assert!(address != MAP_FAILED);
-        (address as *mut u8, length)
-    }
-}
 
-impl Drop for BackingStore {
-    fn drop(&mut self) {
-        unsafe {
-            let result = libc::close(self.fd);
-            assert!(thread::panicking() || result == 0);
-        }
+        let mut flags = nix::sys::mman::ProtFlags::empty();
+        flags.set(nix::sys::mman::ProtFlags::PROT_READ, true);
+        flags.set(nix::sys::mman::ProtFlags::PROT_WRITE, true);
+        let address = nix::sys::mman::mmap(
+            None,
+            length.unwrap(),
+            flags,
+            nix::sys::mman::MapFlags::MAP_SHARED,
+            self.fd.as_fd(),
+            0,
+        )
+        .expect("Could not map memory");
+        (address.as_ptr() as *mut u8, length.unwrap().get())
     }
 }
 
@@ -823,7 +819,9 @@ impl Drop for OsIpcSharedMemory {
 impl Clone for OsIpcSharedMemory {
     fn clone(&self) -> OsIpcSharedMemory {
         unsafe {
-            let store = BackingStore::from_fd(libc::dup(self.store.fd()));
+            let fd = nix::unistd::dup(self.store.fd()).expect("Could not copy file descriptor");
+
+            let store = BackingStore::from_fd(fd);
             let (address, _) = store.map_file(Some(self.length));
             OsIpcSharedMemory::from_raw_parts(address, self.length, store)
         }
@@ -872,7 +870,7 @@ impl OsIpcSharedMemory {
         OsIpcSharedMemory { ptr, length, store }
     }
 
-    unsafe fn from_fd(fd: c_int) -> OsIpcSharedMemory {
+    unsafe fn from_fd(fd: OwnedFd) -> OsIpcSharedMemory {
         let store = BackingStore::from_fd(fd);
         let (ptr, length) = store.map_file(None);
         OsIpcSharedMemory::from_raw_parts(ptr, length, store)
@@ -1032,7 +1030,7 @@ fn recv(fd: c_int, blocking_mode: BlockingMode) -> Result<IpcMessage, UnixError>
                 channels.push(OsOpaqueIpcChannel::from_fd(fd));
                 continue;
             }
-            shared_memory_regions.push(OsIpcSharedMemory::from_fd(fd));
+            shared_memory_regions.push(OsIpcSharedMemory::from_fd(OwnedFd::from_raw_fd(fd)));
         }
     }
 
@@ -1109,13 +1107,11 @@ fn new_msghdr(iovec: &mut [iovec], cmsg_buffer: *mut cmsghdr, cmsg_space: MsgCon
     msghdr
 }
 
-fn create_shmem(name: CString, length: usize) -> c_int {
-    unsafe {
-        let fd = libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC);
-        assert!(fd >= 0);
-        assert_eq!(libc::ftruncate(fd, length as off_t), 0);
-        fd
-    }
+fn create_shmem(name: CString, length: usize) -> OwnedFd {
+    let file = nix::sys::memfd::memfd_create(name.as_c_str(), MFdFlags::MFD_CLOEXEC)
+        .expect("Could not create memory shared file");
+    ftruncate(&file, length as i64).expect("Could not truncate");
+    file
 }
 
 struct UnixCmsg {
