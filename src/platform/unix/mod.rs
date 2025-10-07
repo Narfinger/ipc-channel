@@ -20,7 +20,9 @@ use libc::{sa_family_t, setsockopt, size_t, sockaddr, sockaddr_un, socketpair, s
 use libc::{EAGAIN, EWOULDBLOCK};
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
+use nix::errno::Errno;
 use nix::sys::memfd::MFdFlags;
+use nix::sys::socket::{MsgFlags, SockFlag, SockProtocol};
 use nix::unistd::ftruncate;
 use std::cell::Cell;
 use std::cmp;
@@ -30,7 +32,7 @@ use std::error::Error as StdError;
 use std::ffi::{c_uint, CString};
 use std::fmt::{self, Debug, Formatter};
 use std::hash::BuildHasherDefault;
-use std::io;
+use std::io::{self, IoSliceMut};
 use std::mem;
 use std::num::NonZero;
 use std::ops::{Deref, RangeFrom};
@@ -93,24 +95,14 @@ static PID: LazyLock<u32> = LazyLock::new(std::process::id);
 // A global count used to create unique IDs
 static SHM_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-pub fn channel() -> Result<(OsIpcSender, OsIpcReceiver), UnixError> {
-    let mut results = [0, 0];
-    unsafe {
-        if socketpair(
-            libc::AF_UNIX,
-            SOCK_SEQPACKET | SOCK_FLAGS,
-            0,
-            &mut results[0],
-        ) >= 0
-        {
-            Ok((
-                OsIpcSender::from_fd(results[0]),
-                OsIpcReceiver::from_fd(results[1]),
-            ))
-        } else {
-            Err(UnixError::last())
-        }
-    }
+pub fn channel() -> Result<(OsIpcSender, OsIpcReceiver), Errno> {
+    nix::sys::socket::socketpair(
+        nix::sys::socket::AddressFamily::Unix,
+        nix::sys::socket::SockType::SeqPacket,
+        SockProtocol::Raw,
+        SockFlag::empty(),
+    )
+    .map(|(sender, receiver)| (OsIpcSender { fd: sender }, OsIpcReceiver { fd: receiver }))
 }
 
 #[derive(Clone, Copy)]
@@ -119,46 +111,15 @@ struct PollEntry {
     pub fd: RawFd,
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(Debug)]
 pub struct OsIpcReceiver {
-    fd: Cell<c_int>,
-}
-
-impl Drop for OsIpcReceiver {
-    fn drop(&mut self) {
-        unsafe {
-            let fd = self.fd.get();
-            if fd >= 0 {
-                let result = libc::close(fd);
-                assert!(
-                    thread::panicking() || result == 0,
-                    "closed receiver (fd: {}): {}",
-                    fd,
-                    UnixError::last(),
-                );
-            }
-        }
-    }
+    fd: OwnedFd,
 }
 
 impl OsIpcReceiver {
-    fn from_fd(fd: c_int) -> OsIpcReceiver {
-        OsIpcReceiver { fd: Cell::new(fd) }
-    }
-
-    fn consume_fd(&self) -> c_int {
-        let fd = self.fd.get();
-        self.fd.set(-1);
-        fd
-    }
-
-    pub fn consume(&self) -> OsIpcReceiver {
-        OsIpcReceiver::from_fd(self.consume_fd())
-    }
-
     #[allow(clippy::type_complexity)]
     pub fn recv(&self) -> Result<IpcMessage, UnixError> {
-        recv(self.fd.get(), BlockingMode::Blocking)
+        recv(self.fd, BlockingMode::Blocking)
     }
 
     #[allow(clippy::type_complexity)]
@@ -172,21 +133,9 @@ impl OsIpcReceiver {
     }
 }
 
-#[derive(PartialEq, Debug)]
-struct SharedFileDescriptor(c_int);
-
-impl Drop for SharedFileDescriptor {
-    fn drop(&mut self) {
-        unsafe {
-            let result = libc::close(self.0);
-            assert!(thread::panicking() || result == 0);
-        }
-    }
-}
-
 #[derive(PartialEq, Debug, Clone)]
 pub struct OsIpcSender {
-    fd: Arc<SharedFileDescriptor>,
+    fd: OwnedFd,
 }
 
 impl OsIpcSender {
@@ -985,20 +934,33 @@ enum BlockingMode {
 }
 
 #[allow(clippy::uninit_vec, clippy::type_complexity)]
-fn recv(fd: c_int, blocking_mode: BlockingMode) -> Result<IpcMessage, UnixError> {
+fn recv(fd: c_int, blocking_mode: BlockingMode) -> Result<IpcMessage, Errno> {
     let (mut channels, mut shared_memory_regions) = (Vec::new(), Vec::new());
 
     // First fragments begins with a header recording the total data length.
     //
     // We use this to determine whether we already got the entire message,
     // or need to receive additional fragments -- and if so, how much.
-    let mut total_size = 0usize;
+    let mut total_size = 0;
     let mut main_data_buffer;
-    unsafe {
-        // Allocate a buffer without initialising the memory.
-        main_data_buffer = Vec::with_capacity(OsIpcSender::get_max_fragment_size());
-        main_data_buffer.set_len(OsIpcSender::get_max_fragment_size());
 
+    // Allocate a buffer without initialising the memory.
+    main_data_buffer = Vec::with_capacity(OsIpcSender::get_max_fragment_size());
+    unsafe {
+        main_data_buffer.set_len(OsIpcSender::get_max_fragment_size());
+    }
+
+    let iovs = [
+        IoSliceMut::new(&mut [total_size]),
+        IoSliceMut::new(main_data_buffer.as_mut_slice()),
+    ];
+
+    let msg = nix::sys::socket::recvmsg(fd, iovs.as_mut_slice(), None, MsgFlags::empty())?;
+
+    let iovs = msg.iovs();
+    let cmsgs = msg.cmsgs();
+
+    unsafe {
         let mut iovec = [
             iovec {
                 iov_base: &mut total_size as *mut _ as *mut c_void,

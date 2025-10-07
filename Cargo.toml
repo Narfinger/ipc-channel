@@ -47,7 +47,7 @@ uuid = { version = "1", features = ["v4"] }
 [target.'cfg(any(target_os = "linux", target_os = "openbsd", target_os = "freebsd", target_os = "illumos"))'.dependencies]
 mio = { version = "1.0", default-features = false, features = ["os-ext"] }
 tempfile = "3.4"
-nix = { version = "0.30.1", features = ["fs", "mman", "uio"] }
+nix = { version = "0.30.1", features = ["fs", "mman", "uio", "socket"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 rand = "0.9"

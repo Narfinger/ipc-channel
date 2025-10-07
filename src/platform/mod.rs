@@ -16,19 +16,7 @@
         target_os = "illumos",
     )
 ))]
-mod unix;
-#[cfg(all(
-    not(feature = "force-inprocess"),
-    any(
-        target_os = "linux",
-        target_os = "openbsd",
-        target_os = "freebsd",
-        target_os = "illumos",
-    )
-))]
-mod os {
-    pub use super::unix::*;
-}
+mod modern_unix;
 
 #[cfg(all(not(feature = "force-inprocess"), target_os = "macos"))]
 mod macos;
