@@ -16,7 +16,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cell::RefCell;
 #[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios")))]
 use std::env;
-use std::iter;
 #[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios",)))]
 use std::process::{self, Command, Stdio};
 #[cfg(not(any(
@@ -481,6 +480,33 @@ fn shared_memory() {
     assert!(person_and_shared_memory.1.iter().all(|byte| *byte == 0xba));
     assert!(received_person_and_shared_memory
         .1
+        .iter()
+        .all(|byte| *byte == 0xba));
+}
+
+#[test]
+fn shared_memory_slices_send() {
+    let bytes = [0xba; 24];
+    let person = ("Patrick Walton".to_owned(), 29);
+    let (memory, index) = IpcSharedMemorySlice::from_bytes(&bytes);
+    let person_and_shared_memory = (person, memory);
+    let (tx, rx) = ipc::channel().unwrap();
+    tx.send(person_and_shared_memory.clone()).unwrap();
+    let received_person_and_shared_memory = rx.recv().unwrap();
+    assert_eq!(
+        received_person_and_shared_memory.0,
+        person_and_shared_memory.0
+    );
+    assert!(person_and_shared_memory
+        .1
+        .get(&index)
+        .unwrap()
+        .iter()
+        .all(|byte| *byte == 0xba));
+    assert!(received_person_and_shared_memory
+        .1
+        .get(&index)
+        .unwrap()
         .iter()
         .all(|byte| *byte == 0xba));
 }

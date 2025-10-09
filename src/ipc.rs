@@ -23,7 +23,7 @@ use std::fmt::{self, Debug, Formatter};
 use std::io::{self};
 use std::marker::PhantomData;
 use std::mem;
-use std::ops::{Deref, Range};
+use std::ops::Deref;
 use std::time::Duration;
 
 thread_local! {
@@ -648,14 +648,13 @@ impl IpcSharedMemory {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct IpcSharedMemorySliceIndex(OsIpcSharedMemoryIndex);
 
 /// This is just a bunch of bytes you can index into.
 /// There is _no_ synchronization happening.
+#[derive(Clone)]
 pub struct IpcSharedMemorySlice {
-    /// These are the start and end positions of the data
-    positions: Vec<IpcSharedMemorySliceIndex>,
     /// None represents no data (empty slice)
     os_shared_memory: Option<OsIpcSharedMemory>,
 }
@@ -663,7 +662,12 @@ pub struct IpcSharedMemorySlice {
 impl IpcSharedMemorySlice {
     pub fn new() -> IpcSharedMemorySlice {
         IpcSharedMemorySlice {
-            positions: vec![],
+            os_shared_memory: None,
+        }
+    }
+
+    pub fn empty() -> IpcSharedMemorySlice {
+        IpcSharedMemorySlice {
             os_shared_memory: None,
         }
     }
@@ -677,7 +681,6 @@ impl IpcSharedMemorySlice {
             (
                 IpcSharedMemorySlice {
                     os_shared_memory: Some(memory),
-                    positions: vec![IpcSharedMemorySliceIndex(index.clone())],
                 },
                 IpcSharedMemorySliceIndex(index),
             )
@@ -700,6 +703,57 @@ impl IpcSharedMemorySlice {
         let new_index = memory.push_bytes(bytes);
 
         Ok(IpcSharedMemorySliceIndex(new_index))
+    }
+}
+
+impl<'de> Deserialize<'de> for IpcSharedMemorySlice {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let index: usize = Deserialize::deserialize(deserializer)?;
+        if index == usize::MAX {
+            return Ok(IpcSharedMemorySlice::empty());
+        }
+
+        let os_shared_memory = OS_IPC_SHARED_MEMORY_REGIONS_FOR_DESERIALIZATION.with(
+            |os_ipc_shared_memory_regions_for_deserialization| {
+                let mut regions =  os_ipc_shared_memory_regions_for_deserialization.borrow_mut();
+                let Some(region) = regions.get_mut(index) else {
+                    return Err(format!("Cannot consume shared memory region at index {index}, there are only {} regions available", regions.len()));
+                };
+
+                region.take().ok_or_else(|| format!("Shared memory region {index} has already been consumed"))
+            },
+        ).map_err(D::Error::custom)?;
+
+        Ok(IpcSharedMemorySlice {
+            os_shared_memory: Some(os_shared_memory),
+        })
+    }
+}
+
+impl Serialize for IpcSharedMemorySlice {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if let Some(os_shared_memory) = &self.os_shared_memory {
+            let index = OS_IPC_SHARED_MEMORY_REGIONS_FOR_SERIALIZATION.with(
+                |os_ipc_shared_memory_regions_for_serialization| {
+                    let mut os_ipc_shared_memory_regions_for_serialization =
+                        os_ipc_shared_memory_regions_for_serialization.borrow_mut();
+                    let index = os_ipc_shared_memory_regions_for_serialization.len();
+                    os_ipc_shared_memory_regions_for_serialization.push(os_shared_memory.clone());
+                    index
+                },
+            );
+            debug_assert!(index < usize::MAX);
+            index
+        } else {
+            usize::MAX
+        }
+        .serialize(serializer)
     }
 }
 
