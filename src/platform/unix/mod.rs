@@ -904,6 +904,10 @@ impl OsIpcSharedMemory {
             OsIpcSharedMemory::from_raw_parts(address, bytes.len(), store)
         }
     }
+
+    pub fn push(&mut self, &[u8]) {
+
+    }
 }
 
 #[derive(Debug)]

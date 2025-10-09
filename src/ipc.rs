@@ -21,7 +21,7 @@ use std::fmt::{self, Debug, Formatter};
 use std::io;
 use std::marker::PhantomData;
 use std::mem;
-use std::ops::Deref;
+use std::ops::{Deref, Range};
 use std::time::Duration;
 
 thread_local! {
@@ -645,6 +645,64 @@ impl IpcSharedMemory {
         }
     }
 }
+
+
+/// This is just a bunch of bytes you can index into.
+/// There is _no_ synchronization happening.
+struct IpcSharedMemorySlice {
+    /// These are the start and end positions of the data
+    positions: Vec<Range<usize>>,
+    /// None represents no data (empty slice)
+    os_shared_memory: Option<OsIpcSharedMemory>,
+}
+
+impl IpcSharedMemorySlice {
+    pub fn new() -> IpcSharedMemorySlice {
+        IpcSharedMemorySlice {
+            positions: vec![],
+            os_shared_memory: None,
+        }
+    }
+
+        /// Create shared memory initialized with the bytes provided.
+    pub fn from_bytes(bytes: &[u8]) -> IpcSharedMemory {
+        if bytes.is_empty() {
+            IpcSharedMemory::new()
+        } else {
+            let index = Range {
+                start: 0,
+                end: bytes.len(),
+            };
+            IpcSharedMemorySlice {
+                os_shared_memory: Some(OsIpcSharedMemory::from_bytes(bytes)),
+                positions: vec![index],
+            }
+        }
+    }
+
+    pub fn get_bytes(&self, index: Range) -> Option<&[u8]> {
+        os_shared_memory.map(|memory| memory[index.start.. index.end])
+    }
+
+    pub fn add(&mut self, bytes: &[u8]) -> Result<IpcSharedMemorySliceIndex, IpcError> {
+        let memory = if self.os_shared_memory.is_none() {
+            self.os_shared_memory.unwrap()
+        } else {
+            return IpcError::Io();
+        };
+
+        let new_index = Range {
+            start: memory.len() +1,
+            end: start + bytes.len(),
+        };
+
+        memory.push(bytes);
+
+        panic!("NYI");
+    }
+}
+
+
 
 /// Result for readable events returned from [IpcReceiverSet::select].
 ///
