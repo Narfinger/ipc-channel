@@ -314,6 +314,8 @@ impl OsOpaqueIpcChannel {
     }
 }
 
+pub type OsIpcSharedMemoryIndex = std::ops::Range<usize>;
+
 pub struct OsIpcSharedMemory {
     ptr: *mut u8,
     length: usize,
@@ -386,7 +388,26 @@ impl OsIpcSharedMemory {
         }
     }
 
-    pub fn push_bytes(&mut self, bytes: &[u8]) {
+    pub fn from_bytes_with_index(bytes: &[u8]) -> (OsIpcSharedMemory, OsIpcSharedMemoryIndex) {
+        let mut v = Arc::new(bytes.to_vec());
+        (
+            OsIpcSharedMemory {
+                ptr: Arc::get_mut(&mut v).unwrap().as_mut_ptr(),
+                length: v.len(),
+                data: v,
+            },
+            std::ops::Range {
+                start: 0,
+                end: v.len(),
+            },
+        )
+    }
+
+    pub fn push_bytes(&mut self, bytes: &[u8]) -> OsIpcSharedMemoryIndex {
+        let index = Range {
+            start: self.length + 1,
+            end: self.length + v.len(),
+        };
         self.data.append(bytes);
         self.length = v.len();
     }
