@@ -807,6 +807,8 @@ impl Drop for BackingStore {
     }
 }
 
+pub type OsIpcSharedMemoryIndex = std::ops::Range<usize>;
+
 pub struct OsIpcSharedMemory {
     ptr: *mut u8,
     length: usize,
@@ -905,17 +907,40 @@ impl OsIpcSharedMemory {
         }
     }
 
-    pub fn push_bytes(&mut self, bytes: &[u8]) {
-        let new_length = self.length +bytes.len();
-        let address = unsafe {
+    pub fn from_bytes_with_index(bytes: &[u8]) -> (OsIpcSharedMemory, OsIpcSharedMemoryIndex) {
+        unsafe {
+            let store = BackingStore::new(bytes.len());
+            let (address, _) = store.map_file(Some(bytes.len()));
+            ptr::copy_nonoverlapping(bytes.as_ptr(), address, bytes.len());
+            (
+                OsIpcSharedMemory::from_raw_parts(address, bytes.len(), store),
+                std::ops::Range {
+                    start: 0,
+                    end: bytes.len(),
+                },
+            )
+        }
+    }
 
+    pub fn push_bytes(&mut self, bytes: &[u8]) -> OsIpcSharedMemoryIndex {
+        let new_length = self.length + bytes.len();
+        let address = unsafe {
             assert_eq!(libc::ftruncate(self.store.fd, new_length as off_t), 0);
             let (address, _) = self.store.map_file(Some(new_length));
             ptr::copy_nonoverlapping(bytes.as_ptr(), address.add(self.length), bytes.len());
             address
         };
+        let new_index = std::ops::Range {
+            start: self.length,
+            end: new_length,
+        };
         self.length = new_length;
         self.ptr = address;
+        new_index
+    }
+
+    pub fn get(&self, index: &OsIpcSharedMemoryIndex) -> &[u8] {
+        unsafe { slice::from_raw_parts(self.ptr.add(index.start), index.end - index.start) }
     }
 }
 

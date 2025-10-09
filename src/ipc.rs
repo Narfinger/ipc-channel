@@ -7,7 +7,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use crate::platform::{self, OsIpcChannel, OsIpcReceiver, OsIpcReceiverSet, OsIpcSender};
+use crate::platform::{
+    self, OsIpcChannel, OsIpcReceiver, OsIpcReceiverSet, OsIpcSender, OsIpcSharedMemoryIndex,
+};
 use crate::platform::{
     OsIpcOneShotServer, OsIpcSelectionResult, OsIpcSharedMemory, OsOpaqueIpcChannel,
 };
@@ -666,47 +668,40 @@ impl IpcSharedMemorySlice {
         }
     }
 
-        /// Create shared memory initialized with the bytes provided.
-    pub fn from_bytes(bytes: &[u8]) -> (IpcSharedMemorySlice, OsIpcSharedMemoryIndex) {
+    /// Create shared memory initialized with the bytes provided.
+    pub fn from_bytes(bytes: &[u8]) -> (IpcSharedMemorySlice, IpcSharedMemorySliceIndex) {
         if bytes.is_empty() {
-            (IpcSharedMemorySlice::new(), Range { start: 0, end: 0})
+            panic!("Cannot have empty byte slice");
         } else {
-            let index = Range {
-                start: 0,
-                end: bytes.len(),
-            };
-            (IpcSharedMemorySlice {
-                os_shared_memory: Some(OsIpcSharedMemory::from_bytes(bytes)),
-                positions: vec![index.clone()],
-            }, index)
+            let (memory, index) = OsIpcSharedMemory::from_bytes_with_index(bytes);
+            (
+                IpcSharedMemorySlice {
+                    os_shared_memory: Some(memory),
+                    positions: vec![IpcSharedMemorySliceIndex(index.clone())],
+                },
+                IpcSharedMemorySliceIndex(index),
+            )
         }
     }
 
-    pub fn get(&self, index: &OsIpcSharedMemoryIndex) -> Option<&[u8]> {
-        self.os_shared_memory.as_ref().map(|memory| &memory[index.clone()])
+    pub fn get(&self, index: &IpcSharedMemorySliceIndex) -> Option<&[u8]> {
+        self.os_shared_memory.as_ref().map(|sm| sm.get(&index.0))
     }
 
-    pub fn add(&mut self, bytes: &[u8]) -> Result<Range<usize>, IpcError> {
+    pub fn add(&mut self, bytes: &[u8]) -> Result<IpcSharedMemorySliceIndex, IpcError> {
         let memory: &mut OsIpcSharedMemory = if self.os_shared_memory.is_none() {
-            return Err(IpcError::Io(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)));
-
+            return Err(IpcError::Io(std::io::Error::from(
+                std::io::ErrorKind::UnexpectedEof,
+            )));
         } else {
             self.os_shared_memory.as_mut().unwrap()
-
         };
 
-        let new_index = Range {
-            start: memory.len() ,
-            end: memory.len() + bytes.len(),
-        };
+        let new_index = memory.push_bytes(bytes);
 
-        memory.push_bytes(bytes);
-
-        Ok(new_index)
+        Ok(IpcSharedMemorySliceIndex(new_index))
     }
 }
-
-
 
 /// Result for readable events returned from [IpcReceiverSet::select].
 ///
