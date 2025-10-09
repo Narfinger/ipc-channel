@@ -646,12 +646,14 @@ impl IpcSharedMemory {
     }
 }
 
+#[derive(Clone)]
+pub struct IpcSharedMemorySliceIndex(OsIpcSharedMemoryIndex);
 
 /// This is just a bunch of bytes you can index into.
 /// There is _no_ synchronization happening.
 pub struct IpcSharedMemorySlice {
     /// These are the start and end positions of the data
-    positions: Vec<Range<usize>>,
+    positions: Vec<IpcSharedMemorySliceIndex>,
     /// None represents no data (empty slice)
     os_shared_memory: Option<OsIpcSharedMemory>,
 }
@@ -665,7 +667,7 @@ impl IpcSharedMemorySlice {
     }
 
         /// Create shared memory initialized with the bytes provided.
-    pub fn from_bytes(bytes: &[u8]) -> (IpcSharedMemorySlice, Range<usize>) {
+    pub fn from_bytes(bytes: &[u8]) -> (IpcSharedMemorySlice, OsIpcSharedMemoryIndex) {
         if bytes.is_empty() {
             (IpcSharedMemorySlice::new(), Range { start: 0, end: 0})
         } else {
@@ -680,7 +682,7 @@ impl IpcSharedMemorySlice {
         }
     }
 
-    pub fn get(&self, index: &Range<usize>) -> Option<&[u8]> {
+    pub fn get(&self, index: &OsIpcSharedMemoryIndex) -> Option<&[u8]> {
         self.os_shared_memory.as_ref().map(|memory| &memory[index.clone()])
     }
 

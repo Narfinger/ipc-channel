@@ -831,8 +831,7 @@ impl OsIpcOneShotServer {
 }
 
 pub struct OsIpcSharedMemory {
-    ptr: *mut u8,
-    length: usize,
+    memory: Vec<(ptr, length)>
 }
 
 unsafe impl Send for OsIpcSharedMemory {}
@@ -912,7 +911,7 @@ impl OsIpcSharedMemory {
 
 impl OsIpcSharedMemory {
     unsafe fn from_raw_parts(ptr: *mut u8, length: usize) -> OsIpcSharedMemory {
-        OsIpcSharedMemory { ptr, length }
+        OsIpcSharedMemory { vec![(ptr, length)] }
     }
 
     pub fn from_byte(byte: u8, length: usize) -> OsIpcSharedMemory {
@@ -930,6 +929,14 @@ impl OsIpcSharedMemory {
             let address = allocate_vm_pages(bytes.len());
             ptr::copy_nonoverlapping(bytes.as_ptr(), address, bytes.len());
             OsIpcSharedMemory::from_raw_parts(address, bytes.len())
+        }
+    }
+
+    pub fn add(&mut self, bytes: &[u8]) {
+        unsafe {
+            let address = allocate_vm_pages(bytes.len());
+            ptr::copy_nonoverlapping(bytes.as_ptr(), address, bytes.len());
+            self.memory.push((address, bytes.len()));
         }
     }
 }

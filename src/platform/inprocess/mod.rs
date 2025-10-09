@@ -385,6 +385,11 @@ impl OsIpcSharedMemory {
             data: v,
         }
     }
+
+    pub fn push_bytes(&mut self, bytes: &[u8]) {
+        self.data.append(bytes);
+        self.length = v.len();
+    }
 }
 
 #[derive(Debug, PartialEq)]

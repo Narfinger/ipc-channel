@@ -906,7 +906,6 @@ impl OsIpcSharedMemory {
     }
 
     pub fn push_bytes(&mut self, bytes: &[u8]) {
-        println!("LENGTH {:?}, byteslen {:?}", self.length, bytes.len());
         let new_length = self.length +bytes.len();
         let address = unsafe {
 
