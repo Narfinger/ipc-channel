@@ -905,8 +905,18 @@ impl OsIpcSharedMemory {
         }
     }
 
-    pub fn push(&mut self, &[u8]) {
+    pub fn push_bytes(&mut self, bytes: &[u8]) {
+        println!("LENGTH {:?}, byteslen {:?}", self.length, bytes.len());
+        let new_length = self.length +bytes.len();
+        let address = unsafe {
 
+            assert_eq!(libc::ftruncate(self.store.fd, new_length as off_t), 0);
+            let (address, _) = self.store.map_file(Some(new_length));
+            ptr::copy_nonoverlapping(bytes.as_ptr(), address.add(self.length), bytes.len());
+            address
+        };
+        self.length = new_length;
+        self.ptr = address;
     }
 }
 

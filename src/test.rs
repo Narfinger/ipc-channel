@@ -9,7 +9,7 @@
 
 #[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios")))]
 use crate::ipc::IpcReceiver;
-use crate::ipc::{self, IpcReceiverSet, IpcSender, IpcSharedMemory};
+use crate::ipc::{self, IpcReceiverSet, IpcSender, IpcSharedMemory, IpcSharedMemorySlice};
 use crate::router::{RouterProxy, ROUTER};
 use crossbeam_channel::{self, Sender};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -483,6 +483,28 @@ fn shared_memory() {
         .1
         .iter()
         .all(|byte| *byte == 0xba));
+}
+
+#[test]
+fn shared_memory_slices() {
+    let bytes = [0xba; 24];
+    let (mut shared_memory, index) = IpcSharedMemorySlice::from_bytes(&bytes);
+    assert!(shared_memory.get(&index).unwrap().iter().all(|byte| *byte == 0xba));
+
+    let bytes_two = [0xbb; 24];
+    let index2 = shared_memory.add(&bytes_two).unwrap();
+    assert!(shared_memory.get(&index).unwrap().iter().all(|byte| *byte == 0xba));
+    assert_eq!(shared_memory.get(&index).unwrap().iter().count(), 24);
+    assert_eq!(shared_memory.get(&index2).unwrap().iter().count(), 24);
+
+    let bytes_three = [0xbc; 52];
+    let index3 = shared_memory.add(&bytes_three).unwrap();
+    assert!(shared_memory.get(&index).unwrap().iter().all(|byte| *byte == 0xba));
+    assert!(shared_memory.get(&index2).unwrap().iter().all(|byte| *byte == 0xbb));
+    assert!(shared_memory.get(&index3).unwrap().iter().all(|byte| *byte == 0xbc));
+    assert_eq!(shared_memory.get(&index).unwrap().iter().count(), 24);
+    assert_eq!(shared_memory.get(&index2).unwrap().iter().count(), 24);
+    assert_eq!(shared_memory.get(&index3).unwrap().iter().count(), 52);
 }
 
 #[test]

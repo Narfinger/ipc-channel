@@ -18,7 +18,7 @@ use std::cell::RefCell;
 use std::cmp::min;
 use std::error::Error as StdError;
 use std::fmt::{self, Debug, Formatter};
-use std::io;
+use std::io::{self};
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::{Deref, Range};
@@ -649,7 +649,7 @@ impl IpcSharedMemory {
 
 /// This is just a bunch of bytes you can index into.
 /// There is _no_ synchronization happening.
-struct IpcSharedMemorySlice {
+pub struct IpcSharedMemorySlice {
     /// These are the start and end positions of the data
     positions: Vec<Range<usize>>,
     /// None represents no data (empty slice)
@@ -665,40 +665,42 @@ impl IpcSharedMemorySlice {
     }
 
         /// Create shared memory initialized with the bytes provided.
-    pub fn from_bytes(bytes: &[u8]) -> IpcSharedMemory {
+    pub fn from_bytes(bytes: &[u8]) -> (IpcSharedMemorySlice, Range<usize>) {
         if bytes.is_empty() {
-            IpcSharedMemory::new()
+            (IpcSharedMemorySlice::new(), Range { start: 0, end: 0})
         } else {
             let index = Range {
                 start: 0,
                 end: bytes.len(),
             };
-            IpcSharedMemorySlice {
+            (IpcSharedMemorySlice {
                 os_shared_memory: Some(OsIpcSharedMemory::from_bytes(bytes)),
-                positions: vec![index],
-            }
+                positions: vec![index.clone()],
+            }, index)
         }
     }
 
-    pub fn get_bytes(&self, index: Range) -> Option<&[u8]> {
-        os_shared_memory.map(|memory| memory[index.start.. index.end])
+    pub fn get(&self, index: &Range<usize>) -> Option<&[u8]> {
+        self.os_shared_memory.as_ref().map(|memory| &memory[index.clone()])
     }
 
-    pub fn add(&mut self, bytes: &[u8]) -> Result<IpcSharedMemorySliceIndex, IpcError> {
-        let memory = if self.os_shared_memory.is_none() {
-            self.os_shared_memory.unwrap()
+    pub fn add(&mut self, bytes: &[u8]) -> Result<Range<usize>, IpcError> {
+        let memory: &mut OsIpcSharedMemory = if self.os_shared_memory.is_none() {
+            return Err(IpcError::Io(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)));
+
         } else {
-            return IpcError::Io();
+            self.os_shared_memory.as_mut().unwrap()
+
         };
 
         let new_index = Range {
-            start: memory.len() +1,
-            end: start + bytes.len(),
+            start: memory.len() ,
+            end: memory.len() + bytes.len(),
         };
 
-        memory.push(bytes);
+        memory.push_bytes(bytes);
 
-        panic!("NYI");
+        Ok(new_index)
     }
 }
 
