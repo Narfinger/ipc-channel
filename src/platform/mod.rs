@@ -65,7 +65,10 @@ mod os {
 
 pub use self::os::{channel, OsOpaqueIpcChannel};
 pub use self::os::{OsIpcChannel, OsIpcOneShotServer, OsIpcReceiver, OsIpcReceiverSet};
-pub use self::os::{OsIpcSelectionResult, OsIpcSender, OsIpcSharedMemory, OsIpcSharedMemoryIndex};
+pub use self::os::{
+    OsIpcSelectionResult, OsIpcSender, OsIpcSharedMemory, OsIpcSharedMemoryVec,
+    OsIpcSharedMemoryVecIndex,
+};
 
 #[cfg(test)]
 mod test;

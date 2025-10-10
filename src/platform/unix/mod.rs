@@ -807,7 +807,8 @@ impl Drop for BackingStore {
     }
 }
 
-pub type OsIpcSharedMemoryIndex = std::ops::Range<usize>;
+pub type OsIpcSharedMemoryVecIndex = std::ops::Range<usize>;
+pub type OsIpcSharedMemoryVec = OsIpcSharedMemory;
 
 pub struct OsIpcSharedMemory {
     ptr: *mut u8,
@@ -907,7 +908,7 @@ impl OsIpcSharedMemory {
         }
     }
 
-    pub fn from_bytes_with_index(bytes: &[u8]) -> (OsIpcSharedMemory, OsIpcSharedMemoryIndex) {
+    pub fn from_bytes_with_index(bytes: &[u8]) -> (OsIpcSharedMemory, OsIpcSharedMemoryVecIndex) {
         unsafe {
             let store = BackingStore::new(bytes.len());
             let (address, _) = store.map_file(Some(bytes.len()));
@@ -922,7 +923,7 @@ impl OsIpcSharedMemory {
         }
     }
 
-    pub fn push_bytes(&mut self, bytes: &[u8]) -> OsIpcSharedMemoryIndex {
+    pub fn push_bytes(&mut self, bytes: Vec<u8>) -> OsIpcSharedMemoryVecIndex {
         let new_length = self.length + bytes.len();
         let address = unsafe {
             assert_eq!(libc::ftruncate(self.store.fd, new_length as off_t), 0);
@@ -939,8 +940,17 @@ impl OsIpcSharedMemory {
         new_index
     }
 
-    pub fn get(&self, index: &OsIpcSharedMemoryIndex) -> &[u8] {
-        unsafe { slice::from_raw_parts(self.ptr.add(index.start), index.end - index.start) }
+    pub fn get(&self, index: &OsIpcSharedMemoryVecIndex) -> Option<&[u8]> {
+        if index.end <= self.length {
+            unsafe {
+                Some(slice::from_raw_parts(
+                    self.ptr.add(index.start),
+                    index.end - index.start,
+                ))
+            }
+        } else {
+            None
+        }
     }
 }
 

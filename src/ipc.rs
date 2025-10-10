@@ -8,7 +8,8 @@
 // except according to those terms.
 
 use crate::platform::{
-    self, OsIpcChannel, OsIpcReceiver, OsIpcReceiverSet, OsIpcSender, OsIpcSharedMemoryIndex,
+    self, OsIpcChannel, OsIpcReceiver, OsIpcReceiverSet, OsIpcSender, OsIpcSharedMemoryVec,
+    OsIpcSharedMemoryVecIndex,
 };
 use crate::platform::{
     OsIpcOneShotServer, OsIpcSelectionResult, OsIpcSharedMemory, OsOpaqueIpcChannel,
@@ -649,71 +650,73 @@ impl IpcSharedMemory {
 }
 
 #[derive(Clone, Deserialize, Serialize)]
-pub struct IpcSharedMemorySliceIndex(OsIpcSharedMemoryIndex);
+pub struct IpcSharedMemoryVecIndex(OsIpcSharedMemoryVecIndex);
 
 /// This is just a bunch of bytes you can index into.
 /// There is _no_ synchronization happening.
 #[derive(Clone)]
-pub struct IpcSharedMemorySlice {
+pub struct IpcSharedMemoryVec {
     /// None represents no data (empty slice)
-    os_shared_memory: Option<OsIpcSharedMemory>,
+    os_shared_memory_vec: Option<OsIpcSharedMemoryVec>,
 }
 
-impl IpcSharedMemorySlice {
-    pub fn new() -> IpcSharedMemorySlice {
-        IpcSharedMemorySlice {
-            os_shared_memory: None,
+impl IpcSharedMemoryVec {
+    pub fn new() -> IpcSharedMemoryVec {
+        IpcSharedMemoryVec {
+            os_shared_memory_vec: None,
         }
     }
 
-    pub fn empty() -> IpcSharedMemorySlice {
-        IpcSharedMemorySlice {
-            os_shared_memory: None,
+    pub fn empty() -> IpcSharedMemoryVec {
+        IpcSharedMemoryVec {
+            os_shared_memory_vec: None,
         }
     }
 
     /// Create shared memory initialized with the bytes provided.
-    pub fn from_bytes(bytes: &[u8]) -> (IpcSharedMemorySlice, IpcSharedMemorySliceIndex) {
+    pub fn from_bytes(bytes: &[u8]) -> (IpcSharedMemoryVec, IpcSharedMemoryVecIndex) {
         if bytes.is_empty() {
             panic!("Cannot have empty byte slice");
         } else {
             let (memory, index) = OsIpcSharedMemory::from_bytes_with_index(bytes);
             (
-                IpcSharedMemorySlice {
-                    os_shared_memory: Some(memory),
+                IpcSharedMemoryVec {
+                    os_shared_memory_vec: Some(memory),
                 },
-                IpcSharedMemorySliceIndex(index),
+                IpcSharedMemoryVecIndex(index),
             )
         }
     }
 
-    pub fn get(&self, index: &IpcSharedMemorySliceIndex) -> Option<&[u8]> {
-        self.os_shared_memory.as_ref().map(|sm| sm.get(&index.0))
+    pub fn get(&self, index: &IpcSharedMemoryVecIndex) -> Option<&[u8]> {
+        self.os_shared_memory_vec
+            .as_ref()
+            .and_then(|sm| sm.get(&index.0))
     }
 
-    pub fn add(&mut self, bytes: &[u8]) -> Result<IpcSharedMemorySliceIndex, IpcError> {
-        let memory: &mut OsIpcSharedMemory = if self.os_shared_memory.is_none() {
+    pub fn add(&mut self, bytes: Vec<u8>) -> Result<IpcSharedMemoryVecIndex, IpcError> {
+        let memory: &mut OsIpcSharedMemory = if self.os_shared_memory_vec.is_none() {
             return Err(IpcError::Io(std::io::Error::from(
                 std::io::ErrorKind::UnexpectedEof,
             )));
         } else {
-            self.os_shared_memory.as_mut().unwrap()
+            self.os_shared_memory_vec.as_mut().unwrap()
         };
 
         let new_index = memory.push_bytes(bytes);
 
-        Ok(IpcSharedMemorySliceIndex(new_index))
+        Ok(IpcSharedMemoryVecIndex(new_index))
     }
 }
 
-impl<'de> Deserialize<'de> for IpcSharedMemorySlice {
+impl<'de> Deserialize<'de> for IpcSharedMemoryVec {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         let index: usize = Deserialize::deserialize(deserializer)?;
         if index == usize::MAX {
-            return Ok(IpcSharedMemorySlice::empty());
+            return Ok(IpcSharedMemoryVec::empty());
         }
 
         let os_shared_memory = OS_IPC_SHARED_MEMORY_REGIONS_FOR_DESERIALIZATION.with(
@@ -727,18 +730,18 @@ impl<'de> Deserialize<'de> for IpcSharedMemorySlice {
             },
         ).map_err(D::Error::custom)?;
 
-        Ok(IpcSharedMemorySlice {
-            os_shared_memory: Some(os_shared_memory),
+        Ok(IpcSharedMemoryVec {
+            os_shared_memory_vec: Some(os_shared_memory),
         })
     }
 }
 
-impl Serialize for IpcSharedMemorySlice {
+impl Serialize for IpcSharedMemoryVec {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        if let Some(os_shared_memory) = &self.os_shared_memory {
+        if let Some(os_shared_memory) = &self.os_shared_memory_vec {
             let index = OS_IPC_SHARED_MEMORY_REGIONS_FOR_SERIALIZATION.with(
                 |os_ipc_shared_memory_regions_for_serialization| {
                     let mut os_ipc_shared_memory_regions_for_serialization =
