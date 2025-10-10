@@ -10,6 +10,7 @@
 use crate::ipc::{self, IpcMessage};
 use bincode;
 use crossbeam_channel::{self, Receiver, RecvTimeoutError, Select, Sender, TryRecvError};
+use serde::de::SeqAccess;
 use std::cell::{Ref, RefCell};
 use std::cmp::PartialEq;
 use std::collections::hash_map::HashMap;
@@ -18,6 +19,7 @@ use std::fmt::{self, Debug, Formatter};
 use std::io;
 use std::ops::{Deref, RangeFrom};
 use std::slice;
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use std::usize;
@@ -314,8 +316,6 @@ impl OsOpaqueIpcChannel {
     }
 }
 
-pub type OsIpcSharedMemoryIndex = std::ops::Range<usize>;
-
 pub struct OsIpcSharedMemory {
     ptr: *mut u8,
     length: usize,
@@ -387,29 +387,38 @@ impl OsIpcSharedMemory {
             data: v,
         }
     }
+}
 
-    pub fn from_bytes_with_index(bytes: &[u8]) -> (OsIpcSharedMemory, OsIpcSharedMemoryIndex) {
-        let mut v = Arc::new(bytes.to_vec());
+pub type OsIpcSharedMemoryVecIndex = usize;
+#[derive(Clone)]
+pub struct OsIpcSharedMemoryVec {
+    data: Arc<boxcar::Vec<Vec<u8>>>,
+    length: Arc<AtomicUsize>,
+}
+
+impl OsIpcSharedMemoryVec {
+    pub fn from_bytes_with_index(
+        bytes: &[u8],
+    ) -> (OsIpcSharedMemoryVec, OsIpcSharedMemoryVecIndex) {
+        let vec = boxcar::Vec::new();
+        vec.push(bytes.to_owned());
         (
-            OsIpcSharedMemory {
-                ptr: Arc::get_mut(&mut v).unwrap().as_mut_ptr(),
-                length: v.len(),
-                data: v,
+            OsIpcSharedMemoryVec {
+                data: Arc::new(vec),
+                length: Arc::new(AtomicUsize::new(0)),
             },
-            std::ops::Range {
-                start: 0,
-                end: v.len(),
-            },
+            0,
         )
     }
 
-    pub fn push_bytes(&mut self, bytes: &[u8]) -> OsIpcSharedMemoryIndex {
-        let index = Range {
-            start: self.length + 1,
-            end: self.length + v.len(),
-        };
-        self.data.append(bytes);
-        self.length = v.len();
+    pub fn push_bytes(&mut self, bytes: &[u8]) -> OsIpcSharedMemoryVecIndex {
+        self.data.push(bytes.to_owned());
+        self.length
+            .fetch_add(1, std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn get(&self, index: &OsIpcSharedMemoryVecIndex) -> Option<&[u8]> {
+        self.data.get(*index).map(|v| v.as_slice())
     }
 }
 

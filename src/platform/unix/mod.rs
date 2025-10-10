@@ -923,7 +923,7 @@ impl OsIpcSharedMemory {
         }
     }
 
-    pub fn push_bytes(&mut self, bytes: Vec<u8>) -> OsIpcSharedMemoryVecIndex {
+    pub fn push_bytes(&mut self, bytes: &[u8]) -> OsIpcSharedMemoryVecIndex {
         let new_length = self.length + bytes.len();
         let address = unsafe {
             assert_eq!(libc::ftruncate(self.store.fd, new_length as off_t), 0);

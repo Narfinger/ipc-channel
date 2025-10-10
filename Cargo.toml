@@ -25,13 +25,13 @@ harness = false
 
 [features]
 default = []
-force-inprocess = ["dep:arc-swap"]
+force-inprocess = ["dep:boxcar"]
 async = ["dep:futures-core", "dep:futures-channel"]
 win32-trace = []
 enable-slow-tests = []
 
 [dependencies]
-arc-swap = { version = "1", optional = true }
+boxcar = { version = "0.2.14", optional = true }
 bincode = "1"
 crossbeam-channel = "0.5"
 fnv = "1.0.3"

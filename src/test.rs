@@ -522,7 +522,7 @@ fn shared_memory_slices() {
         .all(|byte| *byte == 0xba));
 
     let bytes_two = vec![0xbb; 24];
-    let index2 = shared_memory.add(bytes_two).unwrap();
+    let index2 = shared_memory.add(&bytes_two).unwrap();
     assert!(shared_memory
         .get(&index)
         .unwrap()
@@ -532,7 +532,7 @@ fn shared_memory_slices() {
     assert_eq!(shared_memory.get(&index2).unwrap().iter().count(), 24);
 
     let bytes_three = vec![0xbc; 52];
-    let index3 = shared_memory.add(bytes_three).unwrap();
+    let index3 = shared_memory.add(&bytes_three).unwrap();
     assert!(shared_memory
         .get(&index)
         .unwrap()

@@ -656,7 +656,7 @@ pub struct IpcSharedMemoryVecIndex(OsIpcSharedMemoryVecIndex);
 /// These is _not_ a shared data structure.
 /// We only guarantee that the pushed values can be send over ipc but do not make
 /// any guarantee about updating already hold `IpcSharedMemoryVec`
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct IpcSharedMemoryVec {
     /// None represents no data (empty slice)
     os_shared_memory_vec: Option<OsIpcSharedMemoryVec>,
@@ -682,7 +682,7 @@ impl IpcSharedMemoryVec {
         if bytes.is_empty() {
             panic!("Cannot have empty byte slice");
         } else {
-            let (memory, index) = OsIpcSharedMemory::from_bytes_with_index(bytes);
+            let (memory, index) = OsIpcSharedMemoryVec::from_bytes_with_index(bytes);
             (
                 IpcSharedMemoryVec {
                     os_shared_memory_vec: Some(memory),
@@ -702,8 +702,8 @@ impl IpcSharedMemoryVec {
 
     /// Add some bytes to this memory vec and return the Index or an error.
     /// Notice that `IpcSharedMemoryVec` that are based on this one are not guaranteed to be updated.
-    pub fn add(&mut self, bytes: Vec<u8>) -> Result<IpcSharedMemoryVecIndex, IpcError> {
-        let memory: &mut OsIpcSharedMemory = if self.os_shared_memory_vec.is_none() {
+    pub fn add(&mut self, bytes: &[u8]) -> Result<IpcSharedMemoryVecIndex, IpcError> {
+        let memory: &mut OsIpcSharedMemoryVec = if self.os_shared_memory_vec.is_none() {
             return Err(IpcError::Io(std::io::Error::from(
                 std::io::ErrorKind::UnexpectedEof,
             )));
@@ -714,57 +714,6 @@ impl IpcSharedMemoryVec {
         let new_index = memory.push_bytes(bytes);
 
         Ok(IpcSharedMemoryVecIndex(new_index))
-    }
-}
-
-impl<'de> Deserialize<'de> for IpcSharedMemoryVec {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let index: usize = Deserialize::deserialize(deserializer)?;
-        if index == usize::MAX {
-            return Ok(IpcSharedMemoryVec::empty());
-        }
-
-        let os_shared_memory = OS_IPC_SHARED_MEMORY_REGIONS_FOR_DESERIALIZATION.with(
-            |os_ipc_shared_memory_regions_for_deserialization| {
-                let mut regions =  os_ipc_shared_memory_regions_for_deserialization.borrow_mut();
-                let Some(region) = regions.get_mut(index) else {
-                    return Err(format!("Cannot consume shared memory region at index {index}, there are only {} regions available", regions.len()));
-                };
-
-                region.take().ok_or_else(|| format!("Shared memory region {index} has already been consumed"))
-            },
-        ).map_err(D::Error::custom)?;
-
-        Ok(IpcSharedMemoryVec {
-            os_shared_memory_vec: Some(os_shared_memory),
-        })
-    }
-}
-
-impl Serialize for IpcSharedMemoryVec {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        if let Some(os_shared_memory) = &self.os_shared_memory_vec {
-            let index = OS_IPC_SHARED_MEMORY_REGIONS_FOR_SERIALIZATION.with(
-                |os_ipc_shared_memory_regions_for_serialization| {
-                    let mut os_ipc_shared_memory_regions_for_serialization =
-                        os_ipc_shared_memory_regions_for_serialization.borrow_mut();
-                    let index = os_ipc_shared_memory_regions_for_serialization.len();
-                    os_ipc_shared_memory_regions_for_serialization.push(os_shared_memory.clone());
-                    index
-                },
-            );
-            debug_assert!(index < usize::MAX);
-            index
-        } else {
-            usize::MAX
-        }
-        .serialize(serializer)
     }
 }
 
