@@ -652,8 +652,10 @@ impl IpcSharedMemory {
 #[derive(Clone, Deserialize, Serialize)]
 pub struct IpcSharedMemoryVecIndex(OsIpcSharedMemoryVecIndex);
 
-/// This is just a bunch of bytes you can index into.
-/// There is _no_ synchronization happening.
+/// This represents a vector that can be send over ipc.
+/// These is _not_ a shared data structure.
+/// We only guarantee that the pushed values can be send over ipc but do not make
+/// any guarantee about updating already hold `IpcSharedMemoryVec`
 #[derive(Clone)]
 pub struct IpcSharedMemoryVec {
     /// None represents no data (empty slice)
@@ -661,6 +663,7 @@ pub struct IpcSharedMemoryVec {
 }
 
 impl IpcSharedMemoryVec {
+    /// Create a new vec with nothing
     pub fn new() -> IpcSharedMemoryVec {
         IpcSharedMemoryVec {
             os_shared_memory_vec: None,
@@ -673,7 +676,8 @@ impl IpcSharedMemoryVec {
         }
     }
 
-    /// Create shared memory initialized with the bytes provided.
+    /// Create shared memory initialized with the bytes provided. Returns the ipcSharedMemoryVec
+    /// and the index
     pub fn from_bytes(bytes: &[u8]) -> (IpcSharedMemoryVec, IpcSharedMemoryVecIndex) {
         if bytes.is_empty() {
             panic!("Cannot have empty byte slice");
@@ -688,12 +692,16 @@ impl IpcSharedMemoryVec {
         }
     }
 
+    /// Use an index to index into your `SharedMemoryVec` to get the bytes or None
+    /// if your index is invalid.
     pub fn get(&self, index: &IpcSharedMemoryVecIndex) -> Option<&[u8]> {
         self.os_shared_memory_vec
             .as_ref()
             .and_then(|sm| sm.get(&index.0))
     }
 
+    /// Add some bytes to this memory vec and return the Index or an error.
+    /// Notice that `IpcSharedMemoryVec` that are based on this one are not guaranteed to be updated.
     pub fn add(&mut self, bytes: Vec<u8>) -> Result<IpcSharedMemoryVecIndex, IpcError> {
         let memory: &mut OsIpcSharedMemory = if self.os_shared_memory_vec.is_none() {
             return Err(IpcError::Io(std::io::Error::from(
