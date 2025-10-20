@@ -7,7 +7,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use crate::platform::{self, OsIpcChannel, OsIpcReceiver, OsIpcReceiverSet, OsIpcSender};
+use crate::platform::{
+    self, OsIpcChannel, OsIpcReceiver, OsIpcReceiverSet, OsIpcSender, OsIpcSharedMemoryIndex,
+    OsIpcSharedMemoryVec,
+};
 use crate::platform::{
     OsIpcOneShotServer, OsIpcSelectionResult, OsIpcSharedMemory, OsOpaqueIpcChannel,
 };
@@ -33,6 +36,12 @@ thread_local! {
     static OS_IPC_CHANNELS_FOR_SERIALIZATION: RefCell<Vec<OsIpcChannel>> = const { RefCell::new(Vec::new()) };
 
     static OS_IPC_SHARED_MEMORY_REGIONS_FOR_SERIALIZATION: RefCell<Vec<OsIpcSharedMemory>> =
+        const { RefCell::new(Vec::new()) };
+
+    static OS_IPC_SHARED_MEMORY_VEC_REGIONS_FOR_DESERIALIZATION:
+        RefCell<Vec<Option<OsIpcSharedMemory>>> = const { RefCell::new(Vec::new()) };
+
+            static OS_IPC_SHARED_MEMORY_VEC_REGIONS_FOR_SERIALIZATION: RefCell<Vec<OsIpcSharedMemory>> =
         const { RefCell::new(Vec::new()) }
 }
 
@@ -368,15 +377,17 @@ where
         OS_IPC_CHANNELS_FOR_SERIALIZATION.with(|os_ipc_channels_for_serialization| {
             OS_IPC_SHARED_MEMORY_REGIONS_FOR_SERIALIZATION.with(
                 |os_ipc_shared_memory_regions_for_serialization| {
-                    bincode::serialize_into(&mut bytes, &data)?;
-                    let os_ipc_channels = os_ipc_channels_for_serialization.take();
-                    let os_ipc_shared_memory_regions =
-                        os_ipc_shared_memory_regions_for_serialization.take();
-                    Ok(self.os_sender.send(
-                        &bytes[..],
-                        os_ipc_channels,
-                        os_ipc_shared_memory_regions,
-                    )?)
+                    OS_IPC_SHARED_MEMORY_VEC_REGIONS_FOR_SERIALIZATION.with(
+                        |os_ipc_shared_memory_vec_regions_for_serialization| {
+                            bincode::serialize_into(&mut bytes, &data)?;
+                            Ok(self.os_sender.send(
+                                &bytes[..],
+                                os_ipc_channels_for_serialization.take(),
+                                os_ipc_shared_memory_regions_for_serialization.take(),
+                                os_ipc_shared_memory_vec_regions_for_serialization.take(),
+                            )?)
+                        },
+                    )
                 },
             )
         })
@@ -628,6 +639,83 @@ impl IpcSharedMemory {
                 os_shared_memory: Some(OsIpcSharedMemory::from_byte(byte, length)),
             }
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct IpcSharedMemoryIndex(OsIpcSharedMemoryIndex);
+
+#[derive(Clone, Debug)]
+pub struct IpcSharedMemoryVec {
+    os_shared_memory_vec: OsIpcSharedMemoryVec,
+}
+
+impl IpcSharedMemoryVec {
+    pub fn from_bytes(bytes: &[u8]) -> IpcSharedMemoryVec {
+        IpcSharedMemoryVec {
+            os_shared_memory_vec: OsIpcSharedMemoryVec::from_bytes(bytes),
+        }
+    }
+
+    pub fn push(&mut self, bytes: &[u8]) -> IpcSharedMemoryIndex {
+        IpcSharedMemoryIndex(self.os_shared_memory_vec.push(bytes))
+    }
+
+    pub fn get(&self, index: IpcSharedMemoryIndex) -> &[u8] {
+        self.os_shared_memory_vec.get(index.0)
+    }
+
+    pub fn reader(&self) -> IpcSharedMemoryReader {
+        IpcSharedMemoryReader(self.os_shared_memory_vec.clone())
+    }
+}
+
+pub struct IpcSharedMemoryReader(OsIpcSharedMemoryVec);
+
+impl IpcSharedMemoryReader {
+    pub fn get(&self, index: IpcSharedMemoryIndex) -> &[u8] {
+        self.0.get(index.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for IpcSharedMemoryReader {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let index: usize = Deserialize::deserialize(deserializer)?;
+
+        let os_shared_memory_vec = OS_IPC_SHARED_MEMORY_VEC_REGIONS_FOR_DESERIALIZATION.with(
+            |os_ipc_shared_memory_regions_for_deserialization| {
+                let mut regions =  os_ipc_shared_memory_regions_for_deserialization.borrow_mut();
+                let Some(region) = regions.get_mut(index) else {
+                    return Err(format!("Cannot consume shared memory region at index {index}, there are only {} regions available", regions.len()));
+                };
+
+                region.take().ok_or_else(|| format!("Shared memory region {index} has already been consumed"))
+            },
+        ).map_err(D::Error::custom)?;
+
+        Ok(IpcSharedMemoryReader(os_shared_memory_vec))
+    }
+}
+
+impl Serialize for IpcSharedMemoryReader {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let index = OS_IPC_SHARED_MEMORY_VEC_REGIONS_FOR_SERIALIZATION.with(
+            |os_ipc_shared_memory_regions_for_serialization| {
+                let mut os_ipc_shared_memory_regions_for_serialization =
+                    os_ipc_shared_memory_regions_for_serialization.borrow_mut();
+                let index = os_ipc_shared_memory_regions_for_serialization.len();
+                os_ipc_shared_memory_regions_for_serialization.push(self.0.clone());
+                index
+            },
+        );
+        debug_assert!(index < usize::MAX);
+        index.serialize(serializer)
     }
 }
 
@@ -960,7 +1048,7 @@ impl IpcBytesSender {
     #[inline]
     pub fn send(&self, data: &[u8]) -> Result<(), io::Error> {
         self.os_sender
-            .send(data, vec![], vec![])
+            .send(data, vec![], vec![], vec![])
             .map_err(io::Error::from)
     }
 }

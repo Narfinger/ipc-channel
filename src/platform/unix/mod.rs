@@ -252,6 +252,7 @@ impl OsIpcSender {
         data: &[u8],
         channels: Vec<OsIpcChannel>,
         shared_memory_regions: Vec<OsIpcSharedMemory>,
+        shared_memory_readers: Vec<OsIpcSharedMemoryVec>,
     ) -> Result<(), UnixError> {
         let mut fds = Vec::new();
         for channel in channels.iter() {
@@ -259,6 +260,9 @@ impl OsIpcSender {
         }
         for shared_memory_region in shared_memory_regions.iter() {
             fds.push(shared_memory_region.store.fd());
+        }
+        for shared_memory_readers in shared_memory_readers.iter() {
+            fds.push(shared_memory_readers.store.fd());
         }
 
         // `len` is the total length of the message.
@@ -800,6 +804,13 @@ impl Drop for BackingStore {
     }
 }
 
+pub type OsIpcSharedMemoryVec = OsIpcSharedMemory;
+#[derive(Clone, Debug)]
+pub struct OsIpcSharedMemoryIndex {
+    start: *mut u8,
+    length: usize,
+}
+
 pub struct OsIpcSharedMemory {
     ptr: *mut u8,
     length: usize,
@@ -896,6 +907,28 @@ impl OsIpcSharedMemory {
             ptr::copy_nonoverlapping(bytes.as_ptr(), address, bytes.len());
             OsIpcSharedMemory::from_raw_parts(address, bytes.len(), store)
         }
+    }
+
+    pub fn push(&mut self, bytes: &[u8]) -> OsIpcSharedMemoryIndex {
+        let fd = self.store.fd();
+        let index = unsafe {
+            libc::ftruncate(fd, (self.length + bytes.len()).try_into().unwrap());
+            ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                self.ptr.byte_offset(self.length as isize),
+                bytes.len(),
+            );
+            OsIpcSharedMemoryIndex {
+                start: self.ptr.byte_offset(self.length as isize),
+                length: bytes.len(),
+            }
+        };
+        self.length += bytes.len();
+        index
+    }
+
+    pub fn get(&self, index: OsIpcSharedMemoryIndex) -> &[u8] {
+        unsafe { slice::from_raw_parts(index.start, index.length) }
     }
 }
 
