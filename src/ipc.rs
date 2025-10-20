@@ -39,9 +39,9 @@ thread_local! {
         const { RefCell::new(Vec::new()) };
 
     static OS_IPC_SHARED_MEMORY_VEC_REGIONS_FOR_DESERIALIZATION:
-        RefCell<Vec<Option<OsIpcSharedMemory>>> = const { RefCell::new(Vec::new()) };
+        RefCell<Vec<Option<OsIpcSharedMemoryVec>>> = const { RefCell::new(Vec::new()) };
 
-            static OS_IPC_SHARED_MEMORY_VEC_REGIONS_FOR_SERIALIZATION: RefCell<Vec<OsIpcSharedMemory>> =
+            static OS_IPC_SHARED_MEMORY_VEC_REGIONS_FOR_SERIALIZATION: RefCell<Vec<OsIpcSharedMemoryVec>> =
         const { RefCell::new(Vec::new()) }
 }
 
@@ -645,24 +645,28 @@ impl IpcSharedMemory {
 #[derive(Clone, Debug)]
 pub struct IpcSharedMemoryIndex(OsIpcSharedMemoryIndex);
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct IpcSharedMemoryVec {
     os_shared_memory_vec: OsIpcSharedMemoryVec,
 }
 
 impl IpcSharedMemoryVec {
-    pub fn from_bytes(bytes: &[u8]) -> IpcSharedMemoryVec {
-        IpcSharedMemoryVec {
-            os_shared_memory_vec: OsIpcSharedMemoryVec::from_bytes(bytes),
-        }
+    pub fn from_bytes(bytes: &[u8]) -> (IpcSharedMemoryVec, IpcSharedMemoryIndex) {
+        let (memory, index) = OsIpcSharedMemoryVec::from_bytes(bytes);
+        (
+            IpcSharedMemoryVec {
+                os_shared_memory_vec: memory,
+            },
+            IpcSharedMemoryIndex(index),
+        )
     }
 
     pub fn push(&mut self, bytes: &[u8]) -> IpcSharedMemoryIndex {
         IpcSharedMemoryIndex(self.os_shared_memory_vec.push(bytes))
     }
 
-    pub fn get(&self, index: IpcSharedMemoryIndex) -> &[u8] {
-        self.os_shared_memory_vec.get(index.0)
+    pub fn get(&self, index: &IpcSharedMemoryIndex) -> &[u8] {
+        self.os_shared_memory_vec.get(&index.0)
     }
 
     pub fn reader(&self) -> IpcSharedMemoryReader {
@@ -673,8 +677,8 @@ impl IpcSharedMemoryVec {
 pub struct IpcSharedMemoryReader(OsIpcSharedMemoryVec);
 
 impl IpcSharedMemoryReader {
-    pub fn get(&self, index: IpcSharedMemoryIndex) -> &[u8] {
-        self.0.get(index.0)
+    pub fn get(&self, index: &IpcSharedMemoryIndex) -> &[u8] {
+        self.0.get(&index.0)
     }
 }
 
@@ -706,11 +710,11 @@ impl Serialize for IpcSharedMemoryReader {
         S: Serializer,
     {
         let index = OS_IPC_SHARED_MEMORY_VEC_REGIONS_FOR_SERIALIZATION.with(
-            |os_ipc_shared_memory_regions_for_serialization| {
-                let mut os_ipc_shared_memory_regions_for_serialization =
-                    os_ipc_shared_memory_regions_for_serialization.borrow_mut();
-                let index = os_ipc_shared_memory_regions_for_serialization.len();
-                os_ipc_shared_memory_regions_for_serialization.push(self.0.clone());
+            |os_ipc_shared_memory_vec_regions_for_serialization| {
+                let mut os_ipc_shared_memory_vec_regions_for_serialization =
+                    os_ipc_shared_memory_vec_regions_for_serialization.borrow_mut();
+                let index = os_ipc_shared_memory_vec_regions_for_serialization.len();
+                os_ipc_shared_memory_vec_regions_for_serialization.push(self.0.clone());
                 index
             },
         );
@@ -762,6 +766,7 @@ pub struct IpcMessage {
     pub(crate) data: Vec<u8>,
     pub(crate) os_ipc_channels: Vec<OsOpaqueIpcChannel>,
     pub(crate) os_ipc_shared_memory_regions: Vec<OsIpcSharedMemory>,
+    pub(crate) os_ipc_shared_memory_vec: Vec<OsIpcSharedMemoryVec>,
 }
 
 impl IpcMessage {
@@ -772,6 +777,7 @@ impl IpcMessage {
             data,
             os_ipc_channels: vec![],
             os_ipc_shared_memory_regions: vec![],
+            os_ipc_shared_memory_vec: vec![],
         }
     }
 }
@@ -790,11 +796,13 @@ impl IpcMessage {
         data: Vec<u8>,
         os_ipc_channels: Vec<OsOpaqueIpcChannel>,
         os_ipc_shared_memory_regions: Vec<OsIpcSharedMemory>,
+        os_ipc_shared_memory_vec: Vec<OsIpcSharedMemoryVec>,
     ) -> IpcMessage {
         IpcMessage {
             data,
             os_ipc_channels,
             os_ipc_shared_memory_regions,
+            os_ipc_shared_memory_vec,
         }
     }
 
@@ -806,23 +814,31 @@ impl IpcMessage {
         OS_IPC_CHANNELS_FOR_DESERIALIZATION.with(|os_ipc_channels_for_deserialization| {
             OS_IPC_SHARED_MEMORY_REGIONS_FOR_DESERIALIZATION.with(
                 |os_ipc_shared_memory_regions_for_deserialization| {
-                    // Setup the thread local memory for deserialization to take it.
-                    *os_ipc_channels_for_deserialization.borrow_mut() = self.os_ipc_channels;
-                    *os_ipc_shared_memory_regions_for_deserialization.borrow_mut() = self
-                        .os_ipc_shared_memory_regions
-                        .into_iter()
-                        .map(Some)
-                        .collect();
+                    OS_IPC_SHARED_MEMORY_VEC_REGIONS_FOR_SERIALIZATION.with(
+                        |os_ipc_shared_memory_vec_regions_for_serialization| {
+                            // Setup the thread local memory for deserialization to take it.
+                            *os_ipc_channels_for_deserialization.borrow_mut() =
+                                self.os_ipc_channels;
+                            *os_ipc_shared_memory_regions_for_deserialization.borrow_mut() = self
+                                .os_ipc_shared_memory_regions
+                                .into_iter()
+                                .map(Some)
+                                .collect();
+                            *os_ipc_shared_memory_vec_regions_for_serialization.borrow_mut() =
+                                self.os_ipc_shared_memory_vec.into_iter().collect();
 
-                    let result = bincode::deserialize(&self.data[..]);
+                            let result = bincode::deserialize(&self.data[..]);
 
-                    // Clear the shared memory
-                    let _ = os_ipc_shared_memory_regions_for_deserialization.take();
-                    let _ = os_ipc_channels_for_deserialization.take();
+                            // Clear the shared memory
+                            let _ = os_ipc_shared_memory_regions_for_deserialization.take();
+                            let _ = os_ipc_channels_for_deserialization.take();
+                            let _ = os_ipc_shared_memory_vec_regions_for_serialization.take();
 
-                    /* Error check comes after doing cleanup,
-                     * since we need the cleanup both in the success and the error cases. */
-                    result
+                            /* Error check comes after doing cleanup,
+                             * since we need the cleanup both in the success and the error cases. */
+                            result
+                        },
+                    )
                 },
             )
         })

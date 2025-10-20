@@ -804,11 +804,97 @@ impl Drop for BackingStore {
     }
 }
 
-pub type OsIpcSharedMemoryVec = OsIpcSharedMemory;
 #[derive(Clone, Debug)]
 pub struct OsIpcSharedMemoryIndex {
     start: *mut u8,
     length: usize,
+}
+
+pub struct OsIpcSharedMemoryVec {
+    ptr: *mut u8,
+    length: usize,
+    store: BackingStore,
+}
+
+impl OsIpcSharedMemoryVec {
+    pub fn from_bytes(bytes: &[u8]) -> (OsIpcSharedMemoryVec, OsIpcSharedMemoryIndex) {
+        unsafe {
+            let store = BackingStore::new(bytes.len());
+            let (address, _) = store.map_file(Some(bytes.len()));
+            ptr::copy_nonoverlapping(bytes.as_ptr(), address, bytes.len());
+            let memory = OsIpcSharedMemoryVec {
+                ptr: address,
+                length: bytes.len(),
+                store,
+            };
+            (
+                memory,
+                OsIpcSharedMemoryIndex {
+                    start: address,
+                    length: bytes.len(),
+                },
+            )
+        }
+    }
+
+    unsafe fn from_fd(fd: c_int) -> OsIpcSharedMemoryVec {
+        let store = BackingStore::from_fd(fd);
+        let (ptr, length) = store.map_file(None);
+        OsIpcSharedMemoryVec { ptr, length, store }
+    }
+
+    pub fn push(&mut self, bytes: &[u8]) -> OsIpcSharedMemoryIndex {
+        let fd = self.store.fd();
+        let index = unsafe {
+            libc::ftruncate(fd, (self.length + bytes.len()).try_into().unwrap());
+            ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                self.ptr.byte_offset(self.length as isize),
+                bytes.len(),
+            );
+            OsIpcSharedMemoryIndex {
+                start: self.ptr.byte_offset(self.length as isize),
+                length: bytes.len(),
+            }
+        };
+        self.length += bytes.len();
+        index
+    }
+
+    pub fn get(&self, index: &OsIpcSharedMemoryIndex) -> &[u8] {
+        unsafe { slice::from_raw_parts(index.start, index.length) }
+    }
+}
+
+impl PartialEq for OsIpcSharedMemoryVec {
+    fn eq(&self, other: &OsIpcSharedMemoryVec) -> bool {
+        self.ptr == other.ptr
+    }
+}
+
+impl Drop for OsIpcSharedMemoryVec {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.ptr.is_null() {
+                let result = libc::munmap(self.ptr as *mut c_void, self.length);
+                assert!(thread::panicking() || result == 0);
+            }
+        }
+    }
+}
+
+impl Clone for OsIpcSharedMemoryVec {
+    fn clone(&self) -> OsIpcSharedMemoryVec {
+        unsafe {
+            let store = BackingStore::from_fd(libc::dup(self.store.fd()));
+            let (address, _) = store.map_file(Some(self.length));
+            OsIpcSharedMemoryVec {
+                ptr: address,
+                length: self.length,
+                store,
+            }
+        }
+    }
 }
 
 pub struct OsIpcSharedMemory {
@@ -908,28 +994,6 @@ impl OsIpcSharedMemory {
             OsIpcSharedMemory::from_raw_parts(address, bytes.len(), store)
         }
     }
-
-    pub fn push(&mut self, bytes: &[u8]) -> OsIpcSharedMemoryIndex {
-        let fd = self.store.fd();
-        let index = unsafe {
-            libc::ftruncate(fd, (self.length + bytes.len()).try_into().unwrap());
-            ptr::copy_nonoverlapping(
-                bytes.as_ptr(),
-                self.ptr.byte_offset(self.length as isize),
-                bytes.len(),
-            );
-            OsIpcSharedMemoryIndex {
-                start: self.ptr.byte_offset(self.length as isize),
-                length: bytes.len(),
-            }
-        };
-        self.length += bytes.len();
-        index
-    }
-
-    pub fn get(&self, index: OsIpcSharedMemoryIndex) -> &[u8] {
-        unsafe { slice::from_raw_parts(index.start, index.length) }
-    }
 }
 
 #[derive(Debug)]
@@ -1021,7 +1085,8 @@ enum BlockingMode {
 
 #[allow(clippy::uninit_vec, clippy::type_complexity)]
 fn recv(fd: c_int, blocking_mode: BlockingMode) -> Result<IpcMessage, UnixError> {
-    let (mut channels, mut shared_memory_regions) = (Vec::new(), Vec::new());
+    let (mut channels, mut shared_memory_regions, mut shared_memory_vec) =
+        (Vec::new(), Vec::new(), Vec::new());
 
     // First fragments begins with a header recording the total data length.
     //
@@ -1066,6 +1131,7 @@ fn recv(fd: c_int, blocking_mode: BlockingMode) -> Result<IpcMessage, UnixError>
                 continue;
             }
             shared_memory_regions.push(OsIpcSharedMemory::from_fd(fd));
+            shared_memory_vec.push(OsIpcSharedMemoryVec::from_fd(fd));
         }
     }
 
@@ -1075,6 +1141,7 @@ fn recv(fd: c_int, blocking_mode: BlockingMode) -> Result<IpcMessage, UnixError>
             main_data_buffer,
             channels,
             shared_memory_regions,
+            shared_memory_vec,
         ));
     }
 
@@ -1126,6 +1193,7 @@ fn recv(fd: c_int, blocking_mode: BlockingMode) -> Result<IpcMessage, UnixError>
         main_data_buffer,
         channels,
         shared_memory_regions,
+        shared_memory_vec,
     ))
 }
 
