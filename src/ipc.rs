@@ -7,7 +7,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use rkyv::rancor::Fallible;
+use rkyv::rancor::{Error, Fallible, Strategy};
+use rkyv::ser::allocator::ArenaHandle;
+use rkyv::ser::sharing::Share;
+use rkyv::ser::Serializer;
+use rkyv::util::AlignedVec;
 use rkyv::with::{ArchiveWith, DeserializeWith, SerializeWith};
 use rkyv::{Archive, Archived, Deserialize, Place, Resolver, Serialize};
 
@@ -22,7 +26,7 @@ use std::cell::RefCell;
 use std::cmp::min;
 use std::fmt::{self, Debug, Formatter};
 use std::io;
-use std::marker::PhantomData;
+use std::marker::{PhantomData, PhantomPinned};
 use std::ops::Deref;
 use std::time::Duration;
 
@@ -69,9 +73,11 @@ thread_local! {
 ///
 /// [IpcSender]: struct.IpcSender.html
 /// [IpcReceiver]: struct.IpcReceiver.html
-pub fn channel<T>() -> Result<(IpcSender<T>, IpcReceiver<T>), io::Error>
+pub fn channel<T, S, D>() -> Result<(IpcSender<T>, IpcReceiver<T>), io::Error>
 where
-    T: Archive + Serialize,
+    T: Archive + Serialize<S> + Deserialize<T, D>,
+    S: Fallible,
+    D: Fallible,
 {
     let (os_sender, os_receiver) = platform::channel()?;
     let ipc_receiver = IpcReceiver {
@@ -270,7 +276,6 @@ where
         //Ok(field.deserialize(deserializer)? - 1)
     }
 }
-/*
 
 /// Sending end of a channel using serialized messages.
 ///
@@ -292,16 +297,14 @@ where
 /// # let rx_data = embedded_rx.recv().unwrap();
 /// # assert_eq!(rx_data, data);
 /// ```
-#[derive(Debug)]
+#[derive(Archive, Deserialize, Serialize, Debug)]
 pub struct IpcSender<T> {
+    #[rkyv(with = OsIpcSenderDeSerHelper)]
     os_sender: OsIpcSender,
     phantom: PhantomData<T>,
 }
 
-impl<T> Clone for IpcSender<T>
-where
-    T: Serialize,
-{
+impl<T> Clone for IpcSender<T> {
     fn clone(&self) -> IpcSender<T> {
         IpcSender {
             os_sender: self.os_sender.clone(),
@@ -312,7 +315,9 @@ where
 
 impl<T> IpcSender<T>
 where
-    T: Serialize,
+    T: for<'a> Serialize<
+        Strategy<Serializer<AlignedVec, ArenaHandle<'a>, Share>, rkyv::rancor::Error>,
+    >,
 {
     /// Create an [IpcSender] connected to a previously defined [IpcOneShotServer].
     ///
@@ -331,16 +336,17 @@ where
 
     /// Send data across the channel to the receiver.
     pub fn send(&self, data: T) -> Result<(), IpcError> {
-        let mut bytes = Vec::with_capacity(4096);
+        //let mut bytes = Vec::with_capacity(4096);
         OS_IPC_CHANNELS_FOR_SERIALIZATION.with(|os_ipc_channels_for_serialization| {
             OS_IPC_SHARED_MEMORY_REGIONS_FOR_SERIALIZATION.with(
                 |os_ipc_shared_memory_regions_for_serialization| {
-                    bincode::serialize_into(&mut bytes, &data).map_err(SerializationError)?;
+                    let bytes = rkyv::to_bytes::<Error>(&data).map_err(SerializationError)?;
+                    //bincode::serialize_into(&mut bytes, &data).map_err(SerializationError)?;
                     let os_ipc_channels = os_ipc_channels_for_serialization.take();
                     let os_ipc_shared_memory_regions =
                         os_ipc_shared_memory_regions_for_serialization.take();
                     Ok(self.os_sender.send(
-                        &bytes[..],
+                        &bytes,
                         os_ipc_channels,
                         os_ipc_shared_memory_regions,
                     )?)
@@ -349,34 +355,49 @@ where
         })
     }
 
-    pub fn to_opaque(self) -> OpaqueIpcSender {
-        OpaqueIpcSender {
-            os_sender: self.os_sender,
-        }
+    //pub fn to_opaque(self) -> OpaqueIpcSender {
+    //    OpaqueIpcSender {
+    //        os_sender: self.os_sender,
+    //    }
+    //}
+}
+
+struct OsIpcSenderDeSerHelper;
+
+impl ArchiveWith<OsIpcSender> for OsIpcSenderDeSerHelper {
+    type Archived = Archived<i32>;
+    type Resolver = Resolver<i32>;
+
+    fn resolve_with(field: &OsIpcSender, _: (), out: Place<Self::Archived>) {
+        todo!()
+        //let incremented = field + 1;
+        //incremented.resolve((), out);
     }
 }
 
-impl<'de, T> Deserialize<'de> for IpcSender<T> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let os_sender = deserialize_os_ipc_sender(deserializer)?;
-        Ok(IpcSender {
-            os_sender,
-            phantom: PhantomData,
-        })
+impl<S> SerializeWith<OsIpcSender, S> for OsIpcSenderDeSerHelper
+where
+    S: Fallible + ?Sized,
+    i32: Serialize<S>,
+{
+    fn serialize_with(field: &OsIpcSender, serializer: &mut S) -> Result<Self::Resolver, S::Error> {
+        todo!()
+        //let incremented = field + 1;
+        //incremented.serialize(serializer)
     }
 }
 
-impl<T> Serialize for IpcSender<T> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serialize_os_ipc_sender(&self.os_sender, serializer)
+impl<D> DeserializeWith<Archived<i32>, i32, D> for OsIpcSenderDeSerHelper
+where
+    D: Fallible + ?Sized,
+    Archived<i32>: Deserialize<i32, D>,
+{
+    fn deserialize_with(field: &Archived<i32>, deserializer: &mut D) -> Result<i32, D::Error> {
+        todo!()
+        //Ok(field.deserialize(deserializer)? - 1)
     }
 }
+/*
 
 /// Collection of [IpcReceiver]s moved into the set; thus creating a common
 /// (and exclusive) endpoint for receiving messages on any of the added
