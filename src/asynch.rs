@@ -17,7 +17,6 @@ use futures_core::stream::FusedStream;
 use futures_core::task::Context;
 use futures_core::task::Poll;
 use futures_core::Stream;
-use serde_core::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::pin::Pin;

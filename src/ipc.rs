@@ -7,13 +7,14 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use rkyv::primitive::ArchivedI32;
 use rkyv::rancor::{Error, Fallible, Strategy};
 use rkyv::ser::allocator::ArenaHandle;
 use rkyv::ser::sharing::Share;
 use rkyv::ser::Serializer;
 use rkyv::util::AlignedVec;
 use rkyv::with::{ArchiveWith, DeserializeWith, SerializeWith};
-use rkyv::{Archive, Archived, Deserialize, Place, Resolver, Serialize};
+use rkyv::{Archive, Archived, Deserialize, Place, Portable, Resolver, Serialize};
 
 use crate::error::SerializationError;
 use crate::platform::{self, OsIpcChannel, OsIpcReceiver, OsIpcReceiverSet, OsIpcSender};
@@ -365,51 +366,53 @@ where
 struct OsIpcSenderDeSerHelper;
 
 impl ArchiveWith<OsIpcSender> for OsIpcSenderDeSerHelper {
-    type Archived = Archived<i32>;
-    type Resolver = Resolver<i32>;
+    type Archived = Archived<u32>;
+    type Resolver = Resolver<u32>;
 
-    fn resolve_with(field: &OsIpcSender, _: (), out: Place<Self::Archived>) {
-        todo!()
+    fn resolve_with(field: &OsIpcSender, resolver: Self::Resolver, out: Place<Self::Archived>) {
+
+        let index = OS_IPC_CHANNELS_FOR_SERIALIZATION.with(|os_ipc_channels_for_serialization| {
+            let mut os_ipc_channels_for_serialization =
+                os_ipc_channels_for_serialization.borrow_mut();
+            let index = os_ipc_channels_for_serialization.len();
+            os_ipc_channels_for_serialization.push(OsIpcChannel::Sender(field.clone()));
+            index
+        });
+
+        index.resolve((), out);
+        //field.resolve((),out)
+        //todo!()
         //let incremented = field + 1;
         //incremented.resolve((), out);
     }
 }
 
+
 impl<S> SerializeWith<OsIpcSender, S> for OsIpcSenderDeSerHelper
 where
     S: Fallible + ?Sized,
-    i32: Serialize<S>,
+    u32: Serialize<S>,
 {
     fn serialize_with(field: &OsIpcSender, serializer: &mut S) -> Result<Self::Resolver, S::Error> {
-        let index = OS_IPC_CHANNELS_FOR_SERIALIZATION.with(|os_ipc_channels_for_serialization| {
-            let mut os_ipc_channels_for_serialization =
-                os_ipc_channels_for_serialization.borrow_mut();
-            let index = os_ipc_channels_for_serialization.len();
-            os_ipc_channels_for_serialization.push(OsIpcChannel::Sender(os_ipc_sender.clone()));
-            index
-        });
-        index.serialize(serializer)
+        Ok(())
     }
 }
 
-impl<D, T> DeserializeWith<Archived<i32>, IpcSender<T>, D> for OsIpcSenderDeSerHelper
+impl<D> DeserializeWith<Archived<u32>, OsIpcSender, D> for OsIpcSenderDeSerHelper
 where
     D: Fallible + ?Sized,
-    Archived<i32>: Deserialize<i32, D>,
+    Archived<u32>: Deserialize<u32, D>,
 {
     fn deserialize_with(
-        field: &Archived<i32>,
+        field: &Archived<u32>,
         deserializer: &mut D,
-    ) -> Result<IpcSender<T>, D::Error> {
-        let index: i32 = field.deserialize(deserializer)?;
+    ) -> Result<OsIpcSender, D::Error> {
+        let index: u32 = field.deserialize(deserializer)?;
 
         OS_IPC_CHANNELS_FOR_DESERIALIZATION.with(|os_ipc_channels_for_deserialization| {
             // FIXME(pcwalton): This could panic if the data was corrupt and the index was out of
             // bounds. We should return an `Err` result instead.
-            Ok(IpcSender {
-                os_sender: os_ipc_channels_for_deserialization.borrow_mut()[index].to_sender(),
-                phantom: PhantomData,
-            })
+                Ok(os_ipc_channels_for_deserialization.borrow_mut()[index as usize].to_sender())
         })
     }
 }

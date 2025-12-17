@@ -27,7 +27,7 @@
 use futures;
 
 #[cfg(feature = "async")]
-pub mod asynch;
+//pub mod asynch;
 
 #[cfg(all(not(feature = "force-inprocess"), target_os = "windows"))]
 extern crate windows;
