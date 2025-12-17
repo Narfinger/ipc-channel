@@ -35,7 +35,7 @@ extern crate windows;
 mod error;
 pub mod ipc;
 pub mod platform;
-pub mod router;
+//pub mod router;
 
 #[cfg(test)]
 mod test;

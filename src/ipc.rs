@@ -7,6 +7,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use rkyv::rancor::Fallible;
+use rkyv::with::{ArchiveWith, DeserializeWith, SerializeWith};
+use rkyv::{Archive, Archived, Deserialize, Place, Resolver, Serialize};
+
 use crate::error::SerializationError;
 use crate::platform::{self, OsIpcChannel, OsIpcReceiver, OsIpcReceiverSet, OsIpcSender};
 use crate::platform::{
@@ -14,8 +18,6 @@ use crate::platform::{
 };
 use crate::{IpcError, TryRecvError};
 
-use bincode;
-use serde_core::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
 use std::cell::RefCell;
 use std::cmp::min;
 use std::fmt::{self, Debug, Formatter};
@@ -69,7 +71,7 @@ thread_local! {
 /// [IpcReceiver]: struct.IpcReceiver.html
 pub fn channel<T>() -> Result<(IpcSender<T>, IpcReceiver<T>), io::Error>
 where
-    T: for<'de> Deserialize<'de> + Serialize,
+    T: Archive + Serialize,
 {
     let (os_sender, os_receiver) = platform::channel()?;
     let ipc_receiver = IpcReceiver {
@@ -111,12 +113,12 @@ where
 ///
 /// [IpcBytesReceiver]: struct.IpcBytesReceiver.html
 /// [IpcBytesSender]: struct.IpcBytesSender.html
-pub fn bytes_channel() -> Result<(IpcBytesSender, IpcBytesReceiver), io::Error> {
-    let (os_sender, os_receiver) = platform::channel()?;
-    let ipc_bytes_receiver = IpcBytesReceiver { os_receiver };
-    let ipc_bytes_sender = IpcBytesSender { os_sender };
-    Ok((ipc_bytes_sender, ipc_bytes_receiver))
-}
+//pub fn bytes_channel() -> Result<(IpcBytesSender, IpcBytesReceiver), io::Error> {
+//    let (os_sender, os_receiver) = platform::channel()?;
+//    let ipc_bytes_receiver = IpcBytesReceiver { os_receiver };
+//    let ipc_bytes_sender = IpcBytesSender { os_sender };
+//    Ok((ipc_bytes_sender, ipc_bytes_receiver))
+//}
 
 /// Receiving end of a channel using serialized messages.
 ///
@@ -185,31 +187,25 @@ pub fn bytes_channel() -> Result<(IpcBytesSender, IpcBytesReceiver), io::Error> 
 /// Each [IpcReceiver] is backed by the OS specific implementations of `OsIpcReceiver`.
 ///
 /// [IpcReceiver]: struct.IpcReceiver.html
-#[derive(Debug)]
+#[derive(Archive, Serialize, Deserialize, Debug)]
 pub struct IpcReceiver<T> {
+    #[rkyv(with = OsIpcReceiverDeSerHelper)]
     os_receiver: OsIpcReceiver,
     phantom: PhantomData<T>,
 }
 
-impl<T> IpcReceiver<T>
-where
-    T: for<'de> Deserialize<'de> + Serialize,
-{
+impl<T> IpcReceiver<T> {
     /// Blocking receive.
     pub fn recv(&self) -> Result<T, IpcError> {
-        self.os_receiver
-            .recv()?
-            .to()
-            .map_err(IpcError::SerializationError)
+        self.os_receiver.recv()?.to()
+        //.map_err(IpcError::SerializationError)
     }
 
     /// Non-blocking receive
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
-        self.os_receiver
-            .try_recv()?
-            .to()
-            .map_err(IpcError::SerializationError)
-            .map_err(TryRecvError::IpcError)
+        self.os_receiver.try_recv()?.to()
+        //.map_err(IpcError::SerializationError)
+        //.map_err(TryRecvError::IpcError)
     }
 
     /// Blocks for up to the specified duration attempting to receive a message.
@@ -222,41 +218,59 @@ where
         self.os_receiver
             .try_recv_timeout(duration)?
             .to()
-            .map_err(IpcError::SerializationError)
+            //.map_err(IpcError::SerializationError)
             .map_err(TryRecvError::IpcError)
     }
 
-    /// Erase the type of the channel.
-    ///
-    /// Useful for adding routes to a `RouterProxy`.
-    pub fn to_opaque(self) -> OpaqueIpcReceiver {
-        OpaqueIpcReceiver {
-            os_receiver: self.os_receiver,
-        }
+    //  /// Erase the type of the channel.
+    //  ///
+    //  /// Useful for adding routes to a `RouterProxy`.
+    //pub fn to_opaque(self) -> OpaqueIpcReceiver {
+    //    OpaqueIpcReceiver {
+    //        os_receiver: self.os_receiver,
+    //   }
+    //}
+}
+
+struct OsIpcReceiverDeSerHelper;
+
+impl ArchiveWith<OsIpcReceiver> for OsIpcReceiverDeSerHelper {
+    type Archived = Archived<i32>;
+    type Resolver = Resolver<i32>;
+
+    fn resolve_with(field: &OsIpcReceiver, _: (), out: Place<Self::Archived>) {
+        todo!()
+        //let incremented = field + 1;
+        //incremented.resolve((), out);
     }
 }
 
-impl<'de, T> Deserialize<'de> for IpcReceiver<T> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let os_receiver = deserialize_os_ipc_receiver(deserializer)?;
-        Ok(IpcReceiver {
-            os_receiver,
-            phantom: PhantomData,
-        })
+impl<S> SerializeWith<OsIpcReceiver, S> for OsIpcReceiverDeSerHelper
+where
+    S: Fallible + ?Sized,
+    i32: Serialize<S>,
+{
+    fn serialize_with(
+        field: &OsIpcReceiver,
+        serializer: &mut S,
+    ) -> Result<Self::Resolver, S::Error> {
+        todo!()
+        //let incremented = field + 1;
+        //incremented.serialize(serializer)
     }
 }
 
-impl<T> Serialize for IpcReceiver<T> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serialize_os_ipc_receiver(&self.os_receiver, serializer)
+impl<D> DeserializeWith<Archived<i32>, i32, D> for OsIpcReceiverDeSerHelper
+where
+    D: Fallible + ?Sized,
+    Archived<i32>: Deserialize<i32, D>,
+{
+    fn deserialize_with(field: &Archived<i32>, deserializer: &mut D) -> Result<i32, D::Error> {
+        todo!()
+        //Ok(field.deserialize(deserializer)? - 1)
     }
 }
+/*
 
 /// Sending end of a channel using serialized messages.
 ///
@@ -971,3 +985,4 @@ where
         Ok(os_ipc_channels_for_deserialization.borrow_mut()[index].to_receiver())
     })
 }
+ */
