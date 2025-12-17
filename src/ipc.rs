@@ -381,20 +381,36 @@ where
     i32: Serialize<S>,
 {
     fn serialize_with(field: &OsIpcSender, serializer: &mut S) -> Result<Self::Resolver, S::Error> {
-        todo!()
-        //let incremented = field + 1;
-        //incremented.serialize(serializer)
+        let index = OS_IPC_CHANNELS_FOR_SERIALIZATION.with(|os_ipc_channels_for_serialization| {
+            let mut os_ipc_channels_for_serialization =
+                os_ipc_channels_for_serialization.borrow_mut();
+            let index = os_ipc_channels_for_serialization.len();
+            os_ipc_channels_for_serialization.push(OsIpcChannel::Sender(os_ipc_sender.clone()));
+            index
+        });
+        index.serialize(serializer)
     }
 }
 
-impl<D> DeserializeWith<Archived<i32>, i32, D> for OsIpcSenderDeSerHelper
+impl<D, T> DeserializeWith<Archived<i32>, IpcSender<T>, D> for OsIpcSenderDeSerHelper
 where
     D: Fallible + ?Sized,
     Archived<i32>: Deserialize<i32, D>,
 {
-    fn deserialize_with(field: &Archived<i32>, deserializer: &mut D) -> Result<i32, D::Error> {
-        todo!()
-        //Ok(field.deserialize(deserializer)? - 1)
+    fn deserialize_with(
+        field: &Archived<i32>,
+        deserializer: &mut D,
+    ) -> Result<IpcSender<T>, D::Error> {
+        let index: i32 = field.deserialize(deserializer)?;
+
+        OS_IPC_CHANNELS_FOR_DESERIALIZATION.with(|os_ipc_channels_for_deserialization| {
+            // FIXME(pcwalton): This could panic if the data was corrupt and the index was out of
+            // bounds. We should return an `Err` result instead.
+            Ok(IpcSender {
+                os_sender: os_ipc_channels_for_deserialization.borrow_mut()[index].to_sender(),
+                phantom: PhantomData,
+            })
+        })
     }
 }
 /*
