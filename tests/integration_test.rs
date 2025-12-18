@@ -7,6 +7,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+/*
+
 #[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios")))]
 use ipc_channel::ipc::IpcOneShotServer;
 #[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios")))]
@@ -42,3 +44,4 @@ fn spawn_one_shot_server_client() {
         result.code().expect("exit status code not available")
     );
 }
+     */

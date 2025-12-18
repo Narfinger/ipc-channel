@@ -7,6 +7,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use rkyv::api::high::{HighDeserializer, HighValidator};
+use rkyv::bytecheck::CheckBytes;
+use rkyv::de::Pool;
 use rkyv::primitive::ArchivedI32;
 use rkyv::rancor::{Error, Fallible, Strategy};
 use rkyv::ser::allocator::ArenaHandle;
@@ -74,9 +77,10 @@ thread_local! {
 ///
 /// [IpcSender]: struct.IpcSender.html
 /// [IpcReceiver]: struct.IpcReceiver.html
-pub fn channel<T, S, D>() -> Result<(IpcSender<T>, IpcReceiver<T>), io::Error>
+pub fn channel<T, A, S, D>() -> Result<(IpcSender<T>, IpcReceiver<T,A>), io::Error>
 where
-    T: Archive + Serialize<S> + Deserialize<T, D>,
+    A: Portable + Deserialize<T, Strategy<Pool, Error>> + for<'a> CheckBytes<HighValidator<'a, Error>>,
+    T: Archive + Serialize<S>,
     S: Fallible,
     D: Fallible,
 {
@@ -84,6 +88,7 @@ where
     let ipc_receiver = IpcReceiver {
         os_receiver,
         phantom: PhantomData,
+        phantom2: PhantomData,
     };
     let ipc_sender = IpcSender {
         os_sender,
@@ -195,22 +200,35 @@ where
 ///
 /// [IpcReceiver]: struct.IpcReceiver.html
 #[derive(Archive, Serialize, Deserialize, Debug)]
-pub struct IpcReceiver<T> {
+pub struct IpcReceiver<T,A> {
     #[rkyv(with = OsIpcReceiverDeSerHelper)]
     os_receiver: OsIpcReceiver,
     phantom: PhantomData<T>,
+    phantom2: PhantomData<A>,
 }
 
-impl<T> IpcReceiver<T> {
+impl<T: for<'a> Serialize<
+        Strategy<Serializer<A, ArenaHandle<'a>, Share>, rkyv::rancor::Error>>, A: Portable + Archive + Deserialize<T, Strategy<Pool, Error>> + for<'a> CheckBytes<HighValidator<'a, Error>>> IpcReceiver<T,A> {
     /// Blocking receive.
     pub fn recv(&self) -> Result<T, IpcError> {
-        self.os_receiver.recv()?.to()
+        let ipc_msg = self.os_receiver.recv()?;
+        let val = ipc_msg.to::<T,A>()?;
+        Ok(val)
+
+        //self.os_receiver.recv()?.to()?
+        //let ipc_msg = res1?;
+        //let val = ipc_msg.to()?;
+        //Ok(ipc_msg)
+
+
+        //self.os_receiver.recv()?.to()?
         //.map_err(IpcError::SerializationError)
     }
 
     /// Non-blocking receive
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
-        self.os_receiver.try_recv()?.to()
+        todo!()
+        //self.os_receiver.try_recv()?.to().map_err(IpcError::SerializationError).map_err(TryRecvError::IpcError)
         //.map_err(IpcError::SerializationError)
         //.map_err(TryRecvError::IpcError)
     }
@@ -222,11 +240,12 @@ impl<T> IpcReceiver<T> {
     /// block forever. At the time of writing, the smallest duration that may trigger this behavior
     /// is over 24 days.
     pub fn try_recv_timeout(&self, duration: Duration) -> Result<T, TryRecvError> {
-        self.os_receiver
-            .try_recv_timeout(duration)?
-            .to()
-            //.map_err(IpcError::SerializationError)
-            .map_err(TryRecvError::IpcError)
+        todo!()
+        //self.os_receiver
+        //    .try_recv_timeout(duration)?
+        //    .to()
+        //    .map_err(IpcError::SerializationError)
+        //    .map_err(TryRecvError::IpcError)
     }
 
     //  /// Erase the type of the channel.
@@ -671,6 +690,8 @@ impl IpcSelectionResult {
     }
 }
 
+*/
+
 /// Structure used to represent a raw message from an [`IpcSender`].
 ///
 /// Use the [to] method to deserialize the raw result into the requested type.
@@ -718,22 +739,22 @@ impl IpcMessage {
     }
 
     /// Deserialize the raw data in the contained message into the inferred type.
-    pub fn to<T>(self) -> Result<T, SerializationError>
-    where
-        T: for<'de> Deserialize<'de> + Serialize,
+    pub fn to<T,A>(&self) -> Result<T, SerializationError> where A: Archive + Portable + Deserialize<T, Strategy<Pool, Error>> + for<'a> CheckBytes<HighValidator<'a, Error>>
     {
         OS_IPC_CHANNELS_FOR_DESERIALIZATION.with(|os_ipc_channels_for_deserialization| {
             OS_IPC_SHARED_MEMORY_REGIONS_FOR_DESERIALIZATION.with(
                 |os_ipc_shared_memory_regions_for_deserialization| {
                     // Setup the thread local memory for deserialization to take it.
-                    *os_ipc_channels_for_deserialization.borrow_mut() = self.os_ipc_channels;
-                    *os_ipc_shared_memory_regions_for_deserialization.borrow_mut() = self
-                        .os_ipc_shared_memory_regions
-                        .into_iter()
-                        .map(Some)
-                        .collect();
+                    //*os_ipc_channels_for_deserialization.borrow_mut() = self.os_ipc_channels;
+                    //*os_ipc_shared_memory_regions_for_deserialization.borrow_mut() = self
+                    //    .os_ipc_shared_memory_regions
+                    //    .into_iter()
+                    //    .map(Some)
+                    //    .collect();
 
-                    let result = bincode::deserialize(&self.data[..]).map_err(|e| e.into());
+                    let archived = rkyv::access::<A, Error>(&self.data).unwrap();
+                    let deserialized = rkyv::deserialize::<T, Error>(archived).unwrap();
+                    //let result = rkyv::deserialize::<T, Error>(archived).map_err(|e| e.into());
 
                     // Clear the shared memory
                     let _ = os_ipc_shared_memory_regions_for_deserialization.take();
@@ -741,12 +762,16 @@ impl IpcMessage {
 
                     /* Error check comes after doing cleanup,
                      * since we need the cleanup both in the success and the error cases. */
-                    result
+                    //result
+                    //Ok(archived.clone())
+                    Ok(deserialized)
                 },
             )
         })
     }
 }
+
+/*
 
 #[derive(Clone, Debug)]
 pub struct OpaqueIpcSender {
