@@ -7,7 +7,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use rkyv::api::high::{HighDeserializer, HighValidator};
+use rkyv::api::high::{HighDeserializer, HighSerializer, HighValidator};
 use rkyv::bytecheck::CheckBytes;
 use rkyv::de::Pool;
 use rkyv::primitive::ArchivedI32;
@@ -77,18 +77,12 @@ thread_local! {
 ///
 /// [IpcSender]: struct.IpcSender.html
 /// [IpcReceiver]: struct.IpcReceiver.html
-pub fn channel<T, A, S, D>() -> Result<(IpcSender<T>, IpcReceiver<T,A>), io::Error>
-where
-    A: Portable + Deserialize<T, Strategy<Pool, Error>> + for<'a> CheckBytes<HighValidator<'a, Error>>,
-    T: Archive + Serialize<S>,
-    S: Fallible,
-    D: Fallible,
+pub fn channel<T>() -> Result<(IpcSender<T>, IpcReceiver<T>), io::Error>
 {
     let (os_sender, os_receiver) = platform::channel()?;
     let ipc_receiver = IpcReceiver {
         os_receiver,
         phantom: PhantomData,
-        phantom2: PhantomData,
     };
     let ipc_sender = IpcSender {
         os_sender,
@@ -200,19 +194,18 @@ where
 ///
 /// [IpcReceiver]: struct.IpcReceiver.html
 #[derive(Archive, Serialize, Deserialize, Debug)]
-pub struct IpcReceiver<T,A> {
+pub struct IpcReceiver<T> {
     #[rkyv(with = OsIpcReceiverDeSerHelper)]
     os_receiver: OsIpcReceiver,
     phantom: PhantomData<T>,
-    phantom2: PhantomData<A>,
 }
 
-impl<T: for<'a> Serialize<
-        Strategy<Serializer<A, ArenaHandle<'a>, Share>, rkyv::rancor::Error>>, A: Portable + Archive + Deserialize<T, Strategy<Pool, Error>> + for<'a> CheckBytes<HighValidator<'a, Error>>> IpcReceiver<T,A> {
+
+impl<T> IpcReceiver<T> where T: Archive + for<'a> Serialize<HighSerializer<AlignedVec, ArenaHandle<'a>, Error, >, >, T::Archived: Portable + for<'a> CheckBytes<HighValidator<'a, Error>> + Deserialize<T, Strategy<Pool, Error>>, {
     /// Blocking receive.
     pub fn recv(&self) -> Result<T, IpcError> {
         let ipc_msg = self.os_receiver.recv()?;
-        let val = ipc_msg.to::<T,A>()?;
+        let val = ipc_msg.to::<T>()?;
         Ok(val)
 
         //self.os_receiver.recv()?.to()?
@@ -739,8 +732,7 @@ impl IpcMessage {
     }
 
     /// Deserialize the raw data in the contained message into the inferred type.
-    pub fn to<T,A>(&self) -> Result<T, SerializationError> where A: Archive + Portable + Deserialize<T, Strategy<Pool, Error>> + for<'a> CheckBytes<HighValidator<'a, Error>>
-    {
+    pub fn to<T>(&self) -> Result<T, SerializationError> where T: Archive + for<'a> Serialize<HighSerializer<AlignedVec, ArenaHandle<'a>, Error, >, >, T::Archived: Portable + for<'a> CheckBytes<HighValidator<'a, Error>> + Deserialize<T, Strategy<Pool, Error>> {
         OS_IPC_CHANNELS_FOR_DESERIALIZATION.with(|os_ipc_channels_for_deserialization| {
             OS_IPC_SHARED_MEMORY_REGIONS_FOR_DESERIALIZATION.with(
                 |os_ipc_shared_memory_regions_for_deserialization| {
@@ -752,7 +744,7 @@ impl IpcMessage {
                     //    .map(Some)
                     //    .collect();
 
-                    let archived = rkyv::access::<A, Error>(&self.data).unwrap();
+                    let archived = rkyv::access::<T::Archived, Error>(&self.data).unwrap();
                     let deserialized = rkyv::deserialize::<T, Error>(archived).unwrap();
                     //let result = rkyv::deserialize::<T, Error>(archived).map_err(|e| e.into());
 

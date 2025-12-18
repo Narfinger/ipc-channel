@@ -42,7 +42,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::ipc::IpcOneShotServer;
 #[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios")))]
 use crate::ipc::IpcReceiver;
-use crate::ipc::{self, /* IpcReceiverSet,*/ IpcSender, /*IpcSharedMemory*/};
+use crate::ipc::{self, /* IpcReceiverSet,*/ IpcSender /*IpcSharedMemory*/};
 //use crate::router::{RouterProxy, ROUTER};
 
 #[cfg(not(any(
@@ -133,7 +133,6 @@ fn simple() {
         e => panic!("expected disconnected error, got {e:?}"),
     }
 }
-
 
 /*
 #[test]
