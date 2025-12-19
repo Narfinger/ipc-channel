@@ -77,8 +77,7 @@ thread_local! {
 ///
 /// [IpcSender]: struct.IpcSender.html
 /// [IpcReceiver]: struct.IpcReceiver.html
-pub fn channel<T>() -> Result<(IpcSender<T>, IpcReceiver<T>), io::Error>
-{
+pub fn channel<T>() -> Result<(IpcSender<T>, IpcReceiver<T>), io::Error> {
     let (os_sender, os_receiver) = platform::channel()?;
     let ipc_receiver = IpcReceiver {
         os_receiver,
@@ -200,30 +199,25 @@ pub struct IpcReceiver<T> {
     phantom: PhantomData<T>,
 }
 
-
-impl<T> IpcReceiver<T> where T: Archive + for<'a> Serialize<HighSerializer<AlignedVec, ArenaHandle<'a>, Error, >, >, T::Archived: Portable + for<'a> CheckBytes<HighValidator<'a, Error>> + Deserialize<T, Strategy<Pool, Error>>, {
+impl<T> IpcReceiver<T>
+where
+    T: Archive + for<'a> Serialize<HighSerializer<AlignedVec, ArenaHandle<'a>, Error>>,
+    T::Archived: Portable
+        + for<'a> CheckBytes<HighValidator<'a, Error>>
+        + Deserialize<T, Strategy<Pool, Error>>,
+{
     /// Blocking receive.
     pub fn recv(&self) -> Result<T, IpcError> {
         let ipc_msg = self.os_receiver.recv()?;
         let val = ipc_msg.to::<T>()?;
         Ok(val)
-
-        //self.os_receiver.recv()?.to()?
-        //let ipc_msg = res1?;
-        //let val = ipc_msg.to()?;
-        //Ok(ipc_msg)
-
-
-        //self.os_receiver.recv()?.to()?
-        //.map_err(IpcError::SerializationError)
     }
 
     /// Non-blocking receive
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
-        todo!()
-        //self.os_receiver.try_recv()?.to().map_err(IpcError::SerializationError).map_err(TryRecvError::IpcError)
-        //.map_err(IpcError::SerializationError)
-        //.map_err(TryRecvError::IpcError)
+        let ipc_msg = self.os_receiver.try_recv()?;
+        let val = ipc_msg.to::<T>().map_err(IpcError::SerializationError)?;
+        Ok(val)
     }
 
     /// Blocks for up to the specified duration attempting to receive a message.
@@ -233,12 +227,9 @@ impl<T> IpcReceiver<T> where T: Archive + for<'a> Serialize<HighSerializer<Align
     /// block forever. At the time of writing, the smallest duration that may trigger this behavior
     /// is over 24 days.
     pub fn try_recv_timeout(&self, duration: Duration) -> Result<T, TryRecvError> {
-        todo!()
-        //self.os_receiver
-        //    .try_recv_timeout(duration)?
-        //    .to()
-        //    .map_err(IpcError::SerializationError)
-        //    .map_err(TryRecvError::IpcError)
+        let ipc_msg = self.os_receiver.try_recv_timeout(duration)?;
+        let val = ipc_msg.to::<T>().map_err(IpcError::SerializationError)?;
+        Ok(val)
     }
 
     //  /// Erase the type of the channel.
@@ -254,39 +245,51 @@ impl<T> IpcReceiver<T> where T: Archive + for<'a> Serialize<HighSerializer<Align
 struct OsIpcReceiverDeSerHelper;
 
 impl ArchiveWith<OsIpcReceiver> for OsIpcReceiverDeSerHelper {
-    type Archived = Archived<i32>;
-    type Resolver = Resolver<i32>;
+    type Archived = Archived<u32>;
+    type Resolver = Resolver<u32>;
 
     fn resolve_with(field: &OsIpcReceiver, _: (), out: Place<Self::Archived>) {
-        todo!()
-        //let incremented = field + 1;
-        //incremented.resolve((), out);
+        let index = OS_IPC_CHANNELS_FOR_SERIALIZATION.with(|os_ipc_channels_for_serialization| {
+            let mut os_ipc_channels_for_serialization =
+                os_ipc_channels_for_serialization.borrow_mut();
+            let index = os_ipc_channels_for_serialization.len();
+            os_ipc_channels_for_serialization.push(OsIpcChannel::Receiver(field.consume()));
+            index
+        });
+
+        index.resolve((), out);
     }
 }
 
 impl<S> SerializeWith<OsIpcReceiver, S> for OsIpcReceiverDeSerHelper
 where
     S: Fallible + ?Sized,
-    i32: Serialize<S>,
+    u32: Serialize<S>,
 {
     fn serialize_with(
         field: &OsIpcReceiver,
         serializer: &mut S,
     ) -> Result<Self::Resolver, S::Error> {
-        todo!()
-        //let incremented = field + 1;
-        //incremented.serialize(serializer)
+        Ok(())
     }
 }
 
-impl<D> DeserializeWith<Archived<i32>, i32, D> for OsIpcReceiverDeSerHelper
+impl<D> DeserializeWith<Archived<u32>, OsIpcReceiver, D> for OsIpcReceiverDeSerHelper
 where
     D: Fallible + ?Sized,
-    Archived<i32>: Deserialize<i32, D>,
+    Archived<u32>: Deserialize<u32, D>,
 {
-    fn deserialize_with(field: &Archived<i32>, deserializer: &mut D) -> Result<i32, D::Error> {
-        todo!()
-        //Ok(field.deserialize(deserializer)? - 1)
+    fn deserialize_with(
+        field: &Archived<u32>,
+        deserializer: &mut D,
+    ) -> Result<OsIpcReceiver, D::Error> {
+        let index = rkyv::deserialize::<u32, Error>(field).unwrap();
+
+        OS_IPC_CHANNELS_FOR_DESERIALIZATION.with(|os_ipc_channels_for_deserialization| {
+            // FIXME(pcwalton): This could panic if the data was corrupt and the index was out
+            // of bounds. We should return an `Err` result instead.
+            Ok(os_ipc_channels_for_deserialization.borrow_mut()[index as usize].to_receiver())
+        })
     }
 }
 
@@ -328,9 +331,10 @@ impl<T> Clone for IpcSender<T> {
 
 impl<T> IpcSender<T>
 where
-    T: for<'a> Serialize<
-        Strategy<Serializer<AlignedVec, ArenaHandle<'a>, Share>, rkyv::rancor::Error>,
-    >,
+    T: Archive + for<'a> Serialize<HighSerializer<AlignedVec, ArenaHandle<'a>, Error>>,
+    T::Archived: Portable
+        + for<'a> CheckBytes<HighValidator<'a, Error>>
+        + Deserialize<T, Strategy<Pool, Error>>,
 {
     /// Create an [IpcSender] connected to a previously defined [IpcOneShotServer].
     ///
@@ -382,7 +386,6 @@ impl ArchiveWith<OsIpcSender> for OsIpcSenderDeSerHelper {
     type Resolver = Resolver<u32>;
 
     fn resolve_with(field: &OsIpcSender, resolver: Self::Resolver, out: Place<Self::Archived>) {
-
         let index = OS_IPC_CHANNELS_FOR_SERIALIZATION.with(|os_ipc_channels_for_serialization| {
             let mut os_ipc_channels_for_serialization =
                 os_ipc_channels_for_serialization.borrow_mut();
@@ -392,13 +395,8 @@ impl ArchiveWith<OsIpcSender> for OsIpcSenderDeSerHelper {
         });
 
         index.resolve((), out);
-        //field.resolve((),out)
-        //todo!()
-        //let incremented = field + 1;
-        //incremented.resolve((), out);
     }
 }
-
 
 impl<S> SerializeWith<OsIpcSender, S> for OsIpcSenderDeSerHelper
 where
@@ -424,12 +422,12 @@ where
         OS_IPC_CHANNELS_FOR_DESERIALIZATION.with(|os_ipc_channels_for_deserialization| {
             // FIXME(pcwalton): This could panic if the data was corrupt and the index was out of
             // bounds. We should return an `Err` result instead.
-                Ok(os_ipc_channels_for_deserialization.borrow_mut()[index as usize].to_sender())
+            Ok(os_ipc_channels_for_deserialization.borrow_mut()[index as usize].to_sender())
         })
     }
 }
-/*
 
+/*
 /// Collection of [IpcReceiver]s moved into the set; thus creating a common
 /// (and exclusive) endpoint for receiving messages on any of the added
 /// channels.
@@ -732,7 +730,13 @@ impl IpcMessage {
     }
 
     /// Deserialize the raw data in the contained message into the inferred type.
-    pub fn to<T>(&self) -> Result<T, SerializationError> where T: Archive + for<'a> Serialize<HighSerializer<AlignedVec, ArenaHandle<'a>, Error, >, >, T::Archived: Portable + for<'a> CheckBytes<HighValidator<'a, Error>> + Deserialize<T, Strategy<Pool, Error>> {
+    pub fn to<T>(&self) -> Result<T, SerializationError>
+    where
+        T: Archive + for<'a> Serialize<HighSerializer<AlignedVec, ArenaHandle<'a>, Error>>,
+        T::Archived: Portable
+            + for<'a> CheckBytes<HighValidator<'a, Error>>
+            + Deserialize<T, Strategy<Pool, Error>>,
+    {
         OS_IPC_CHANNELS_FOR_DESERIALIZATION.with(|os_ipc_channels_for_deserialization| {
             OS_IPC_SHARED_MEMORY_REGIONS_FOR_DESERIALIZATION.with(
                 |os_ipc_shared_memory_regions_for_deserialization| {

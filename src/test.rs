@@ -39,7 +39,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
     target_os = "ios",
     target_os = "windows"
 )))]
-use crate::ipc::IpcOneShotServer;
+//use crate::ipc::IpcOneShotServer;
 #[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios")))]
 use crate::ipc::IpcReceiver;
 use crate::ipc::{self, /* IpcReceiverSet,*/ IpcSender /*IpcSharedMemory*/};
@@ -134,7 +134,6 @@ fn simple() {
     }
 }
 
-/*
 #[test]
 fn embedded_senders() {
     let person = ("Patrick Walton".to_owned(), 29);
@@ -163,6 +162,7 @@ fn embedded_receivers() {
     assert_eq!(received_person, person);
 }
 
+/*
 #[test]
 fn select() {
     let (tx0, rx0) = ipc::channel().unwrap();
@@ -790,4 +790,5 @@ mod sync_test {
         assert_impl_all!(IpcSender<usize> : Sync);
     }
 }
+
  */
